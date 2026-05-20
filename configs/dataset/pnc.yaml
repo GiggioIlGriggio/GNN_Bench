@@ -1,0 +1,13 @@
+name: pnc
+root: /media/compa/DATA1/Compa/DATA_DERIVATIVES/PNC
+timepoints: [T0]
+modality: sc                  # sc | fc | multimodal
+atlas: schaefer400
+sc_type: sift_invnodevol_radius2_count_connectivity
+fc_task: rest
+edge_threshold_mode: topk_percent     # absolute | topk_percent | none
+edge_threshold_value: 20.0
+num_workers: 8
+batch_size: 16
+subject_id_pad_width: 10
+subject_list_file: null       # optional path to a .txt allowlist (one sub-ID per line)

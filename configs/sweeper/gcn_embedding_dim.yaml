@@ -1,0 +1,27 @@
+# @package hydra.sweeper
+# Optuna sweeper settings for GCN embedding_dim sweep.
+#
+# Run with:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       --multirun \
+#       model=gcn \
+#       sweeper=gcn_embedding_dim \
+#       objective_metric=r2 \
+#       logging.enabled=true \
+#       logging.project=gcn-embed-sweep \
+#       logging.entity=your-wandb-username
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 250
+params:
+  model.embedding_dim: choice(32, 64, 128, 256)
+  model.hidden_dim: choice(32, 64, 128, 256)
+  model.num_layers: choice(2, 3, 4, 5)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.pooling: choice(mean, max, add)
+  model.jk_mode: choice(last, cat, max)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(2)

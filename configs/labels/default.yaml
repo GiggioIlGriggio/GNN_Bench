@@ -1,0 +1,10 @@
+# Default label configuration
+# Maps to src.configs.label_config.LabelConfig
+
+target: sdi_AGE
+composite_columns: null
+composite_method: null
+composite_params: null
+metadata_file: "Tabular_Data/ALL tabular data.csv"
+id_column: ID
+normalize_components: false

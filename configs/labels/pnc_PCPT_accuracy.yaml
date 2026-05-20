@@ -1,0 +1,11 @@
+# PCPT Accuracy (precision) for PNC dataset
+# Direct column precomputed in PNC_ALL_SCORES.csv.
+
+target: PCPT_precision
+composite_columns: null
+composite_method: null
+composite_params: null
+metadata_file: "Tabular_data/PNC_ALL_SCORES_PCPT.csv"
+id_column: SUBJID
+glm_id_column: SUBJID_MATCHED
+normalize_components: false

@@ -1,0 +1,49 @@
+# --- Large artifacts that don't belong in git ---
+.venv/
+venv/
+*.sif
+checkpoints/
+brain_visualizaer/
+wandb/
+multirun/
+outputs/
+tmp/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- Notebooks ---
+.ipynb_checkpoints/
+
+# --- Editor / OS / local agent state ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.claude/
+.cursor/
+*.swp
+*.swo
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Build / dist ---
+build/
+dist/
+
+# --- Logs ---
+*.log
+logs/

@@ -1,0 +1,15 @@
+# Default fine-tuning configuration
+# Maps to src.configs.finetuning_config.FinetuningConfig
+
+enabled: false
+checkpoint_path: ""
+checkpoint_variant: best
+checkpoint_fold: 0
+frozen_layers: []
+lr_groups: {}
+epochs: 50
+# Epoch-sweep mode: if set, iterate over all epoch snapshots stored in this
+# directory (fold_<N>/epoch_checkpoints/*.pt) and finetune from each,
+# logging R2 as a function of pretraining epoch.
+# Overrides checkpoint_path when non-empty.
+epoch_checkpoint_dir: ""

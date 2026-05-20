@@ -1,0 +1,18 @@
+# Default node/edge feature configuration
+# Maps to src.configs.feature_config.FeatureConfig
+
+node_features:
+  - degree
+  - strength
+edge_features:
+  - weight
+node_feat_dim: 2
+edge_feat_dim: 1
+
+# GLM activation map settings (disabled by default)
+# To enable, add 'glm_scalar' or 'glm_diagonal' to node_features
+# and list the desired contrasts below.
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts: []
+glm_normalize: false

@@ -1,0 +1,14 @@
+name: mlp
+backbone: gcn               # unused by MLP (kept for config compatibility)
+hidden_dim: 128
+num_layers: 2
+dropout: 0.3
+heads: 1                    # unused
+pooling: mean               # unused
+fusion: null
+jk_mode: last               # unused
+embedding_dim: 128          # unused (hidden_dim drives encoder output)
+head_hidden_dim: 32
+head_num_layers: 1
+mlp_input: node_features        # adjacency | node_features | both
+mlp_adjacency_type: weighted # weighted | binary

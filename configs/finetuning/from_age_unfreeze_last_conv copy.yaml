@@ -1,0 +1,35 @@
+# Fine-tuning from an age-pretrained model.
+# Like from_age, but the last GNN convolution (and its BatchNorm) are
+# unfrozen and trained at a reduced learning rate instead of being frozen.
+#
+# Example:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       dataset=orbit_fc model=gcn features=glm_diagonal \
+#       labels=default labels.target=mri_VWM_HL_p \
+#       finetuning=from_age_unfreeze_last_conv \
+#       finetuning.checkpoint_path=checkpoints/pnc_GLM_VWMdprime_gcn_fc \
+#       finetuning.checkpoint_fold=0 finetuning.epochs=100
+
+enabled: true
+checkpoint_path: checkpoints/pnc_GLM_VWMdprime_gcn_fc
+checkpoint_variant: best      # best | last
+checkpoint_fold: 0            # which fold's checkpoint to use as init
+
+# Freeze the first three GNN convolutions and their BatchNorms.
+# backbone.convs.3 and backbone.norms.3 are left unfrozen (trained at lr_groups LR).
+frozen_layers:
+  - backbone.convs.0
+  - backbone.convs.1
+  - backbone.convs.2
+  - backbone.norms.0
+  - backbone.norms.1
+  - backbone.norms.2
+
+# The last conv (and its norm) train at 10x lower LR than the head.
+# Unfrozen params not listed here (i.e. the head) use trainer.lr (default 1e-3).
+lr_groups:
+  backbone.convs.3: 1e-4
+  backbone.norms.3: 1e-4
+
+# Fine-tuning epoch budget (overrides trainer.epochs)
+epochs: 100

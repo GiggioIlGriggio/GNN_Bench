@@ -1,0 +1,26 @@
+# @package hydra.sweeper
+# Optuna sweeper settings for MLP hyperparameter sweep.
+#
+# Run with:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       --multirun \
+#       model=mlp \
+#       sweeper=mlp \
+#       objective_metric=r2 \
+#       logging.enabled=true \
+#       logging.project=mlp-sweep \
+#       logging.entity=your-wandb-username
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 250
+params:
+  model.hidden_dim: choice(32, 64, 128, 256)
+  model.num_layers: choice(2, 3, 4, 5)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(1, 2)
+  model.mlp_input: choice(node_features, adjacency, both)
+  model.mlp_adjacency_type: choice(weighted, binary)

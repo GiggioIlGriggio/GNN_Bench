@@ -1,0 +1,30 @@
+# Fine-tuning from an age-pretrained model.
+#
+# Example usage (same dataset, new target):
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       dataset=pnc labels.target=some_cognitive_score \
+#       features=identity model=gcn \
+#       finetuning=from_age
+#
+# Example usage (cross-dataset transfer):
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       dataset=orbit labels=default \
+#       features=identity model=gcn \
+#       finetuning=from_age
+
+enabled: true
+checkpoint_path: checkpoints
+checkpoint_variant: best      # best | last
+checkpoint_fold: 0            # which fold's checkpoint to use as init
+
+# Freeze the backbone (GNN layers); only the head trains freely.
+frozen_layers:
+  - backbone
+
+# Per-group learning rates (optional).
+# Keys are parameter name prefixes; matched params get their own LR.
+# Unfrozen params not matching any prefix use trainer.lr as default.
+lr_groups: {}
+
+# Fine-tuning epoch budget (overrides trainer.epochs)
+epochs: 100

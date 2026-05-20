@@ -1,0 +1,29 @@
+# Top-level experiment configuration — Hydra entry point.
+#
+# Usage:
+#   python scripts/run_experiment.py \
+#       dataset=orbit model=gcn trainer=default \
+#       features=default labels=default
+#
+# Optional overrides:
+#   sweep=bayesian  finetuning=default
+
+defaults:
+  - dataset: orbit
+  - model: gcn
+  - features: default
+  - labels: default
+  - trainer: default
+  - sweeper: null
+  - finetuning: default
+  - logging: wandb
+  - explainer: default
+  - override hydra/sweeper: optuna
+  - _self_
+
+experiment_name: default_experiment
+description: "Brain connectivity GNN benchmarking run"
+
+# Metric optimised during a sweep (passed to HydraSweep). Override on the
+# CLI to match the sweeper you select, e.g. objective_metric=r2.
+objective_metric: r2

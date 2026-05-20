@@ -1,0 +1,45 @@
+# GNNExplainer configuration
+# Maps to src.configs.explainer_config.ExplainerConfig
+#
+# Set 'enabled: true' on the CLI or in a run-specific override to activate
+# post-training GNNExplainer analysis.
+#
+# edge_size tuning guidance
+# -------------------------
+# At every optimisation step the regularisation added to the loss is:
+#   edge_size × num_nodes_in_graph × sum(edge_mask)
+#
+# For brain connectivity graphs the average degree can range from ~10 (sparse
+# structural connectomes) to ~100 (dense functional connectomes after
+# thresholding).  A rule of thumb:
+#
+#   edge_size ≈ 1 / avg_degree
+#
+# so for a typical functional graph with avg_degree ≈ 50:
+#   edge_size ≈ 0.02
+# and for a sparse structural graph with avg_degree ≈ 10:
+#   edge_size ≈ 0.1
+
+enabled: false
+
+# Optimisation
+epochs: 200
+lr: 0.01
+
+# Regularisation (see docstring for scaling advice)
+# edge_size: "auto" computes 1 / avg_degree from the dataset at run time.
+# Override with a fixed float for reproducible, hand-tuned sparsity, e.g.:
+#   edge_size: 0.02   # for avg_degree ≈ 50 (dense FC graph)
+#   edge_size: 0.1    # for avg_degree ≈ 10 (sparse SC graph)
+edge_size: auto
+edge_ent: 1.0
+node_feat_size: 1.0
+node_feat_ent: 0.1
+
+# Set to "attributes" to also produce per-node-feature importances
+# null = edge masks only (recommended for connectivity analysis)
+node_mask_type: null
+
+# Output
+output_dir: ""        # Empty = <checkpoint_dir>/explanations/
+save_subject_masks: true

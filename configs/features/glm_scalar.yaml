@@ -1,0 +1,23 @@
+# GLM scalar feature configuration
+# Each node receives its GLM activation value(s) as scalar features.
+# Maps to src.configs.feature_config.FeatureConfig
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=glm_scalar ...
+
+node_features:
+  - glm_scalar
+edge_features:
+  - weight
+
+# node_feat_dim = degree(1) + strength(1) + glm_scalar(num_contrasts)
+# With 1 contrast: 2 + 1 = 3
+node_feat_dim: 1
+edge_feat_dim: 1
+
+# GLM settings
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts:
+  - contrast-2back_vs_0back
+glm_normalize: true

@@ -1,0 +1,47 @@
+# Default trainer configuration
+# Maps to src.configs.trainer_config.TrainerConfig
+
+# Optimizer
+optimizer: adam
+lr: 1e-3
+weight_decay: 1e-4
+
+# Scheduler
+scheduler: cosine
+scheduler_params:
+  T_max: 300
+
+# Training loop
+epochs: 300
+gradient_clip_val: 1.0
+
+# Early stopping
+early_stopping_patience: 35
+early_stopping_metric: val_mae
+early_stopping_min_delta: 1e-4
+
+# Label normalisation
+label_norm_strategy: standard  # standard | robust | minmax | none
+
+# Cross-validation
+n_folds: 5
+val_ratio: 0.2
+test_ratio: 0.2
+stratify_bins: 5
+
+# Device
+# 'auto' picks CUDA if available, otherwise CPU.
+# Other valid values: cpu, cuda, cuda:0, cuda:1, ...
+device: auto
+
+# Reproducibility
+seed: 42
+
+# Checkpointing
+checkpoint_dir: checkpoints
+# Save a model snapshot every N training epochs into
+# fold_<N>/epoch_checkpoints/epoch_<E>.pt (0 = disabled).
+# Only applies to normal training, not sweeps.
+save_every_n_epochs: 0
+# Also save a snapshot whenever a new best validation metric is achieved.
+save_on_best: false

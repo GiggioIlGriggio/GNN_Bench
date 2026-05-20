@@ -1,0 +1,10 @@
+node_features:
+  - fc_row
+edge_features:
+  - weight
+node_feat_dim: 400
+edge_feat_dim: 1
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts: []
+glm_normalize: false

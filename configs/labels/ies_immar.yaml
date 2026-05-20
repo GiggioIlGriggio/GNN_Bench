@@ -1,0 +1,23 @@
+# Inverse Efficiency Score (IES) for ORBIT IMMA-r task
+# Maps to src.configs.label_config.LabelConfig
+#
+# IES = Reaction Time / Accuracy
+# Column order matters: first = RT (numerator), second = accuracy (denominator).
+#
+# Pipeline:
+#   1. Compute IES = RT / accuracy on the raw (original-scale) columns.
+#      normalize_components must be FALSE for IES: z-scoring centers accuracy
+#      around 0, making division undefined/explosive for near-mean subjects.
+#   2. Normalize the resulting IES using LabelNormalizer (trainer.label_norm_strategy)
+#
+# Only step 2 is reversed at prediction time (inverse_transform).
+
+target: null
+composite_columns:
+  - beh_IMMA_mRTs    # mean RT on correct trials (numerator)
+  - beh_IMMA_p      # proportion correct / accuracy (denominator)
+composite_method: ies
+composite_params: null
+metadata_file: "Tabular_Data/ALL tabular data.csv"
+id_column: ID
+normalize_components: false

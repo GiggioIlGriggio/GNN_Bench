@@ -1,0 +1,19 @@
+# PCPT Inverse Efficiency Score (IES) for PNC dataset
+# Computes: PCPT_T_TPRT / PCPT_precision
+#
+# Column order matters: [RT, accuracy]
+#
+# normalize_components must be False — z-scoring RT/accuracy columns
+# would make the ratio meaningless.
+# Normalize the resulting IES via trainer.label_norm_strategy instead.
+
+target: null
+composite_columns:
+  - PCPT_T_TPRT      # mean RT on true-positive trials (numerator)
+  - PCPT_precision   # precomputed precision / accuracy (denominator)
+composite_method: ies
+composite_params: null
+metadata_file: "Tabular_data/PNC_ALL_SCORES.csv"
+id_column: SUBJID
+glm_id_column: SUBJID_MATCHED
+normalize_components: true

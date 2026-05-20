@@ -1,0 +1,9 @@
+# wandb logging configuration
+# Maps to src.configs.logging_config.LoggingConfig
+
+enabled: True
+project: orbitglm
+entity: teampolpetta    #giggioilgriggio or teampolpetta if collaborating
+run_name: null
+tags: []
+log_frequency: 1

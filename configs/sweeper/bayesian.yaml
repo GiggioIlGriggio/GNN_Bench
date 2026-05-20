@@ -1,0 +1,21 @@
+# @package hydra.sweeper
+# Optuna sweeper settings for the full Bayesian sweep.
+#
+# Run with:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py \
+#       --multirun \
+#       sweeper=bayesian \
+#       objective_metric=val_mae \
+#       ...
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: minimize
+n_trials: 50
+params:
+  model.hidden_dim: choice(32, 64, 128)
+  model.num_layers: range(2, 5)
+  model.dropout: interval(0.0, 0.5)
+  trainer.lr: tag(log, interval(1e-5, 1e-2))
+  trainer.weight_decay: tag(log, interval(1e-6, 1e-2))

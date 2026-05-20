@@ -1,0 +1,16 @@
+# GAT model configuration
+# Maps to src.configs.model_config.ModelConfig
+
+name: unimodal
+backbone: gin
+hidden_dim: 64
+num_layers: 3
+dropout: 0.1
+heads: 4
+pooling: mean                 # mean | max | add | attention
+fusion: null                  # null for unimodal
+jk_mode: last                 # last | cat | max
+embedding_dim: 64
+head_hidden_dim: 32
+head_num_layers: 2
+gnn_adjacency_type: weighted  # weighted | binary
