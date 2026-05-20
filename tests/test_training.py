@@ -138,3 +138,316 @@ class TestCheckpointManager:
         raise NotImplementedError(
             "TODO: call load_fold_checkpoint(99), assert FileNotFoundError"
         )
+
+
+# ---------------------------------------------------------------------------
+# Nested cross-validation (ADR-0008)
+# ---------------------------------------------------------------------------
+
+class TestSearchSpaceParser:
+    """Tests for the DSL parser in src.training.search_space."""
+
+    def test_choice_int_float_string(self) -> None:
+        """choice(...) must capture int / float / unquoted-string options."""
+        from src.training.search_space import parse_search_space
+
+        params = {
+            "a": "choice(32, 64, 128)",
+            "b": "choice(0.0, 0.1, 0.2)",
+            "c": "choice(mean, max, add)",
+        }
+        specs = {s.name: s for s in parse_search_space(params)}
+        assert specs["a"].kind == "categorical" and specs["a"].choices == [32, 64, 128]
+        assert specs["b"].choices == [0.0, 0.1, 0.2]
+        assert specs["c"].choices == ["mean", "max", "add"]
+
+    def test_range_is_python_halfopen(self) -> None:
+        """range(2, 5) must yield closed [2, 4] (Python range semantics)."""
+        from src.training.search_space import parse_search_space
+
+        spec = parse_search_space({"x": "range(2, 5)"})[0]
+        assert spec.kind == "int"
+        assert spec.low == 2
+        assert spec.high == 4
+        assert spec.step == 1
+
+    def test_interval_and_log_tag(self) -> None:
+        """tag(log, interval(a,b)) must set log=True; interval alone stays linear."""
+        from src.training.search_space import parse_search_space
+
+        plain = parse_search_space({"x": "interval(0.0, 1.0)"})[0]
+        logged = parse_search_space({"x": "tag(log, interval(1e-5, 1e-2))"})[0]
+        assert plain.kind == "float" and plain.log is False
+        assert logged.kind == "float" and logged.log is True
+        assert logged.low == 1e-5 and logged.high == 1e-2
+
+    def test_apply_overrides_does_not_mutate(self) -> None:
+        """TrialOverrides.apply returns new pydantic copies, leaving originals intact."""
+        from src.configs.model_config import ModelConfig
+        from src.configs.trainer_config import TrainerConfig
+        from src.training.search_space import TrialOverrides
+
+        model = ModelConfig(name="mlp", hidden_dim=64, model_params={"x": 1})
+        trainer = TrainerConfig(lr=1e-3)
+        ov = TrialOverrides(values={
+            "model.hidden_dim": 128,
+            "model.model_params.x": 99,
+            "trainer.lr": 5e-4,
+        })
+        new_model, new_trainer = ov.apply(model_cfg=model, trainer_cfg=trainer)
+        assert model.hidden_dim == 64 and model.model_params["x"] == 1
+        assert trainer.lr == 1e-3
+        assert new_model.hidden_dim == 128
+        assert new_model.model_params["x"] == 99
+        assert new_trainer.lr == 5e-4
+
+
+class TestStatisticalTests:
+    """Bouckaert-Frank corrected t-test + Benjamini-Hochberg."""
+
+    def test_identical_scores_yield_p_one(self) -> None:
+        from src.training.statistical_tests import corrected_resampled_paired_t_test
+
+        t, p, df, md = corrected_resampled_paired_t_test(
+            [0.1, 0.2, 0.3, 0.4], [0.1, 0.2, 0.3, 0.4], n_outer_folds=2,
+        )
+        assert t == 0.0
+        assert p == 1.0
+        assert md == 0.0
+
+    def test_correction_inflates_pvalue(self) -> None:
+        """Corrected p must be larger than the naive paired t-test p."""
+        import numpy as np
+        from scipy import stats
+        from src.training.statistical_tests import corrected_resampled_paired_t_test
+
+        rng = np.random.default_rng(1)
+        a = rng.normal(0.5, 0.1, size=50)
+        b = rng.normal(0.4, 0.1, size=50)
+        _, p_corr, _, _ = corrected_resampled_paired_t_test(a, b, n_outer_folds=5)
+        _, p_naive = stats.ttest_rel(a, b)
+        assert p_corr > p_naive
+
+    def test_benjamini_hochberg_matches_r_reference(self) -> None:
+        """Matches R's p.adjust(method='BH') on a published reference vector."""
+        import numpy as np
+        from src.training.statistical_tests import benjamini_hochberg
+
+        ps = [0.001, 0.01, 0.025, 0.04, 0.06]
+        adj = benjamini_hochberg(ps)
+        expected = np.array([0.005, 0.025, 0.04166667, 0.05, 0.06])
+        np.testing.assert_allclose(adj, expected, atol=1e-6)
+
+    def test_benjamini_hochberg_preserves_order(self) -> None:
+        """Shuffled inputs produce shuffled outputs with the same set of values."""
+        import numpy as np
+        from src.training.statistical_tests import benjamini_hochberg
+
+        ps_sorted = np.array([0.001, 0.01, 0.025, 0.04, 0.06])
+        adj_sorted = benjamini_hochberg(ps_sorted)
+        order = np.array([4, 0, 2, 3, 1])
+        ps_shuffled = ps_sorted[order]
+        adj_shuffled = benjamini_hochberg(ps_shuffled)
+        np.testing.assert_allclose(adj_shuffled, adj_sorted[order], atol=1e-6)
+
+
+class _SyntheticNestedCV:
+    """Shared fixture builder — kept module-internal."""
+
+    @staticmethod
+    def make_dataset(n_subjects: int = 60, n_rois: int = 8, seed: int = 0):
+        import numpy as np
+        import torch
+        from torch_geometric.data import Data
+
+        rng = np.random.default_rng(seed)
+        graphs = []
+        labels = []
+        for s in range(n_subjects):
+            x = torch.tensor(rng.normal(size=(n_rois, 4)), dtype=torch.float32)
+            rows = torch.randint(0, n_rois, (20,))
+            cols = torch.randint(0, n_rois, (20,))
+            edge_index = torch.stack([rows, cols], dim=0)
+            edge_attr = torch.rand(20, 1, dtype=torch.float32)
+            y_label = float(x[:, 0].mean().item()) + rng.normal(scale=0.05)
+            g = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_nodes=n_rois)
+            g.subject_id = f"S{s:03d}"
+            graphs.append(g)
+            labels.append(y_label)
+        return graphs, np.array(labels)
+
+    @staticmethod
+    def make_configs(checkpoint_dir, **overrides):
+        from src.configs.model_config import ModelConfig
+        from src.configs.trainer_config import TrainerConfig
+
+        model_cfg = ModelConfig(
+            name="mlp",
+            hidden_dim=8,
+            num_layers=1,
+            head_hidden_dim=4,
+            head_num_layers=1,
+            mlp_input="node_features",
+            mlp_adjacency_type="weighted",
+            embedding_dim=4,
+        )
+        defaults = dict(
+            epochs=2,
+            early_stopping_patience=2,
+            n_outer_folds=3,
+            n_repetitions=1,
+            inner_hpo_trials=0,
+            hpo_metric="val_mae",
+            checkpoint_dir=str(checkpoint_dir),
+            seed=11,
+        )
+        defaults.update(overrides)
+        trainer_cfg = TrainerConfig(**defaults)
+        return model_cfg, trainer_cfg
+
+    @staticmethod
+    def make_logger():
+        from src.configs.logging_config import LoggingConfig
+        from src.logging.wandb_logger import WandbLogger
+
+        return WandbLogger(LoggingConfig(enabled=False))
+
+    @staticmethod
+    def make_factory(model_cfg):
+        from src.models.registry import get_model
+
+        def _factory(trial_model_cfg):
+            return get_model(
+                name=trial_model_cfg.name,
+                cfg=trial_model_cfg,
+                node_feat_dim=4,
+                edge_feat_dim=1,
+                num_nodes=8,
+            )
+
+        return _factory
+
+
+class TestNestedCrossValidator:
+    """End-to-end tests for the nested-CV orchestrator."""
+
+    def test_split_determinism(self) -> None:
+        """Same seed → identical outer and inner index lists, both reps and folds."""
+        import numpy as np
+        from src.training.nested_cross_validation import NestedCrossValidator
+
+        graphs, labels = _SyntheticNestedCV.make_dataset(seed=0)
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            _, trainer_cfg = _SyntheticNestedCV.make_configs(td, n_repetitions=2)
+            ncv = NestedCrossValidator(cfg=trainer_cfg)
+
+            outer_a = []
+            outer_b = []
+            for rep_runs in (outer_a, outer_b):
+                bins = ncv._stratify_bins(labels)
+                seeds = trainer_cfg.resolved_outer_seeds()
+                from sklearn.model_selection import StratifiedKFold
+                for r, seed in enumerate(seeds):
+                    skf = StratifiedKFold(
+                        n_splits=trainer_cfg.effective_n_outer_folds,
+                        shuffle=True, random_state=seed,
+                    )
+                    for k, (tv, te) in enumerate(skf.split(np.arange(len(graphs)), bins)):
+                        train_idx, val_idx = ncv._inner_split(tv.tolist(), bins, seed * 1000 + k)
+                        rep_runs.append((r, k, tv.tolist(), te.tolist(), train_idx, val_idx))
+
+            assert outer_a == outer_b
+
+    def test_no_test_leakage(self) -> None:
+        """Outer-test indices never appear in the inner train or val pools of the same fold."""
+        import numpy as np
+        from sklearn.model_selection import StratifiedKFold
+        from src.training.nested_cross_validation import NestedCrossValidator
+
+        graphs, labels = _SyntheticNestedCV.make_dataset(seed=1)
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            _, trainer_cfg = _SyntheticNestedCV.make_configs(td, n_repetitions=2)
+            ncv = NestedCrossValidator(cfg=trainer_cfg)
+            bins = ncv._stratify_bins(labels)
+
+            for r, seed in enumerate(trainer_cfg.resolved_outer_seeds()):
+                skf = StratifiedKFold(
+                    n_splits=trainer_cfg.effective_n_outer_folds,
+                    shuffle=True, random_state=seed,
+                )
+                for k, (tv, te) in enumerate(skf.split(np.arange(len(graphs)), bins)):
+                    inner_seed = seed * 1000 + k
+                    train_idx, val_idx = ncv._inner_split(tv.tolist(), bins, inner_seed)
+                    test_set = set(te.tolist())
+                    assert not (set(train_idx) & test_set), (
+                        f"Inner train leaks into outer test at rep={r} fold={k}"
+                    )
+                    assert not (set(val_idx) & test_set), (
+                        f"Inner val leaks into outer test at rep={r} fold={k}"
+                    )
+                    # Inner train ∪ inner val == outer TrainVal
+                    assert set(train_idx) | set(val_idx) == set(tv.tolist())
+                    assert not (set(train_idx) & set(val_idx))
+
+    def test_fast_preset_smoke(self) -> None:
+        """Fast preset (inner_hpo_trials=0) runs end-to-end and persists a JSON."""
+        import tempfile
+        from pathlib import Path
+        from src.training.nested_cross_validation import (
+            NestedCrossValidator, NestedCVResult,
+        )
+
+        graphs, labels = _SyntheticNestedCV.make_dataset(seed=2)
+        with tempfile.TemporaryDirectory() as td:
+            model_cfg, trainer_cfg = _SyntheticNestedCV.make_configs(
+                td, n_repetitions=2, n_outer_folds=3, inner_hpo_trials=0,
+            )
+            ncv = NestedCrossValidator(cfg=trainer_cfg)
+            result = ncv.run(
+                model_factory=_SyntheticNestedCV.make_factory(model_cfg),
+                dataset=graphs,
+                labels=labels,
+                base_model_cfg=model_cfg,
+                logger=_SyntheticNestedCV.make_logger(),
+                run_name="test-fast",
+            )
+            assert len(result.fold_results) == 2 * 3
+            assert set(result.mean_metrics) == {"mae", "rmse", "r2", "pearson_r"}
+            saved = Path(td) / "nested_cv_result.json"
+            assert saved.exists()
+            reloaded = NestedCVResult.load(saved)
+            assert reloaded.run_name == "test-fast"
+            assert reloaded.mean_metrics == result.mean_metrics
+
+    def test_hpo_preset_smoke(self) -> None:
+        """Paper-grade preset (inner_hpo_trials>0) drives Optuna and writes artifacts."""
+        import tempfile
+        from pathlib import Path
+        from src.training.nested_cross_validation import NestedCrossValidator
+
+        graphs, labels = _SyntheticNestedCV.make_dataset(seed=3)
+        with tempfile.TemporaryDirectory() as td:
+            model_cfg, trainer_cfg = _SyntheticNestedCV.make_configs(
+                td, n_repetitions=1, n_outer_folds=3, inner_hpo_trials=2,
+                search_space="configs/sweeper/mlp.yaml",
+            )
+            ncv = NestedCrossValidator(
+                cfg=trainer_cfg, search_space_path=trainer_cfg.search_space,
+            )
+            result = ncv.run(
+                model_factory=_SyntheticNestedCV.make_factory(model_cfg),
+                dataset=graphs,
+                labels=labels,
+                base_model_cfg=model_cfg,
+                logger=_SyntheticNestedCV.make_logger(),
+                run_name="test-hpo",
+            )
+            assert len(result.fold_results) == 3
+            for fr in result.fold_results:
+                assert fr.best_hparams  # Optuna picked something
+                fold_dir = Path(td) / f"rep_{fr.rep}" / f"fold_{fr.fold}"
+                assert (fold_dir / "best_hparams.json").exists()
+                assert (fold_dir / "trials.csv").exists()
+                assert (fold_dir / "test_predictions.npz").exists()
