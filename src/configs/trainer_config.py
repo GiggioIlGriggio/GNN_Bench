@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TrainerConfig(BaseModel):
@@ -69,9 +69,55 @@ class TrainerConfig(BaseModel):
     )
 
     # --- Cross-validation ----------------------------------------------------
+    # ``n_folds`` is the legacy alias and still used by HydraSweep. For the
+    # nested protocol (ADR-0008) the effective number of outer folds is
+    # ``n_outer_folds`` if provided, otherwise it falls back to ``n_folds``.
     n_folds: int = Field(
         default=5,
-        description="Number of cross-validation folds.",
+        description=(
+            "Legacy: number of cross-validation folds. Kept for backwards "
+            "compatibility with HydraSweep. NestedCrossValidator uses "
+            "``n_outer_folds`` when set."
+        ),
+    )
+    n_outer_folds: Optional[int] = Field(
+        default=None,
+        description=(
+            "Number of outer folds in the nested CV protocol (ADR-0008). "
+            "Falls back to ``n_folds`` when ``None``."
+        ),
+    )
+    n_repetitions: int = Field(
+        default=1,
+        description=(
+            "Number of repetitions of the outer stratified K-fold. Total "
+            "outer folds evaluated = ``n_repetitions × n_outer_folds``. "
+            "Paper-grade default: 10."
+        ),
+    )
+    inner_hpo_trials: int = Field(
+        default=0,
+        description=(
+            "Number of Optuna trials per outer fold for inner HPO. "
+            "0 disables inner HPO (legacy fast mode — fixed HPs). "
+            "Paper-grade default: 20."
+        ),
+    )
+    hpo_metric: Literal["val_mae", "val_r2"] = Field(
+        default="val_mae",
+        description=(
+            "Validation metric optimised by Optuna and used for Trainer "
+            "early stopping during inner training. Optimisation direction "
+            "is inferred (minimize for val_mae, maximize for val_r2)."
+        ),
+    )
+    outer_seeds: Optional[List[int]] = Field(
+        default=None,
+        description=(
+            "Explicit per-repetition seeds for the outer StratifiedKFold. "
+            "When ``None`` they are derived as ``seed + r`` for "
+            "``r in range(n_repetitions)``."
+        ),
     )
     val_ratio: float = Field(
         default=0.1,
@@ -121,3 +167,43 @@ class TrainerConfig(BaseModel):
             "metric is achieved (stored in fold_<N>/epoch_checkpoints/)."
         ),
     )
+
+    # ------------------------------------------------------------------
+    # Derived / validated nested-CV accessors
+    # ------------------------------------------------------------------
+    @property
+    def effective_n_outer_folds(self) -> int:
+        """Outer-fold count used by NestedCrossValidator.
+
+        Returns ``n_outer_folds`` when set, otherwise falls back to ``n_folds``.
+        """
+        return self.n_outer_folds if self.n_outer_folds is not None else self.n_folds
+
+    @model_validator(mode="after")
+    def _validate_nested_cv_fields(self) -> "TrainerConfig":
+        if self.n_repetitions < 1:
+            raise ValueError(
+                f"n_repetitions must be >= 1, got {self.n_repetitions}"
+            )
+        outer = self.effective_n_outer_folds
+        if outer < 2:
+            raise ValueError(
+                f"Effective number of outer folds must be >= 2, got {outer} "
+                f"(n_outer_folds={self.n_outer_folds}, n_folds={self.n_folds})"
+            )
+        if self.inner_hpo_trials < 0:
+            raise ValueError(
+                f"inner_hpo_trials must be >= 0, got {self.inner_hpo_trials}"
+            )
+        if self.outer_seeds is not None and len(self.outer_seeds) != self.n_repetitions:
+            raise ValueError(
+                f"outer_seeds has length {len(self.outer_seeds)} but "
+                f"n_repetitions={self.n_repetitions}"
+            )
+        return self
+
+    def resolved_outer_seeds(self) -> List[int]:
+        """Return the per-repetition outer seeds, deriving them from ``seed`` if unset."""
+        if self.outer_seeds is not None:
+            return list(self.outer_seeds)
+        return [self.seed + r for r in range(self.n_repetitions)]
