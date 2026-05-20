@@ -734,20 +734,21 @@ class NestedCrossValidator:
         y_test_norm = normalizer.transform(y_test)
         y_val_norm = normalizer.transform(y_val) if val_idx else np.zeros(0)
 
+        bs = self.cfg.batch_size
         loaders: Dict[str, DataLoader] = {
             "train": _make_loader(
                 dataset, train_idx, y_train_norm, shuffle=True,
-                batch_size=getattr(self.cfg, "batch_size", 32),
+                batch_size=bs, drop_last=len(train_idx) > bs,
             ),
             "test": _make_loader(
                 dataset, test_idx, y_test_norm, shuffle=False,
-                batch_size=getattr(self.cfg, "batch_size", 32),
+                batch_size=bs, drop_last=False,
             ),
         }
         if val_idx:
             loaders["val"] = _make_loader(
                 dataset, val_idx, y_val_norm, shuffle=False,
-                batch_size=getattr(self.cfg, "batch_size", 32),
+                batch_size=bs, drop_last=False,
             )
 
         if glm_col_range is not None and glm_normalize:
@@ -794,13 +795,16 @@ def _make_loader(
     *,
     shuffle: bool,
     batch_size: int,
+    drop_last: bool = False,
 ) -> DataLoader:
     graphs = []
     for i, idx in enumerate(indices):
         g = copy.copy(dataset[idx])
         g.y = torch.tensor([y_values[i]], dtype=torch.float32)
         graphs.append(g)
-    return DataLoader(graphs, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(
+        graphs, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
+    )
 
 
 def _aggregate(

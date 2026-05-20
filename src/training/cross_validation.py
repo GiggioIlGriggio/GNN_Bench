@@ -258,10 +258,13 @@ class CrossValidator:
             # ------------------------------------------------------------------
             # Build DataLoaders with labels attached to each graph
             # ------------------------------------------------------------------
+            bs = self.cfg.batch_size
+
             def _make_loader(
                 indices: List[int],
                 y_values: np.ndarray,
                 shuffle: bool,
+                drop_last: bool = False,
             ) -> DataLoader:
                 graphs = []
                 for i, idx in enumerate(indices):
@@ -270,11 +273,15 @@ class CrossValidator:
                     graphs.append(g)
                 return DataLoader(
                     graphs,
-                    batch_size=getattr(self.cfg, "batch_size", 32),
+                    batch_size=bs,
                     shuffle=shuffle,
+                    drop_last=drop_last,
                 )
 
-            train_loader = _make_loader(train_idx, y_train_norm, shuffle=True)
+            train_loader = _make_loader(
+                train_idx, y_train_norm, shuffle=True,
+                drop_last=len(train_idx) > bs,
+            )
             val_loader = _make_loader(val_idx, y_val_norm, shuffle=False)
             test_loader = _make_loader(test_idx, y_test_norm, shuffle=False)
 

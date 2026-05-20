@@ -53,10 +53,6 @@ class DatasetConfig(BaseModel):
         default=4,
         description="Number of DataLoader worker processes.",
     )
-    batch_size: int = Field(
-        default=16,
-        description="Mini-batch size for DataLoader.",
-    )
     subject_id_pad_width: int = Field(
         default=3,
         description="Zero-padding width for converting integer IDs to sub-XXX format.",

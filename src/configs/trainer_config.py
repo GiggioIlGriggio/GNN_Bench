@@ -47,6 +47,14 @@ class TrainerConfig(BaseModel):
         default=1.0,
         description="Max gradient norm for clipping (None to disable).",
     )
+    batch_size: int = Field(
+        default=16,
+        description=(
+            "Mini-batch size for the train/val/test DataLoaders. Train loaders "
+            "use ``drop_last=True`` when the pool exceeds ``batch_size`` to "
+            "avoid singleton final batches that crash ``BatchNorm`` layers."
+        ),
+    )
 
     # --- Early stopping ------------------------------------------------------
     early_stopping_patience: int = Field(

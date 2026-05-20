@@ -451,3 +451,32 @@ class TestNestedCrossValidator:
                 assert (fold_dir / "best_hparams.json").exists()
                 assert (fold_dir / "trials.csv").exists()
                 assert (fold_dir / "test_predictions.npz").exists()
+
+    def test_refit_survives_singleton_trailing_batch(self) -> None:
+        """Regression: refit on a TrainVal pool of N where N % batch_size == 1.
+
+        Without ``drop_last`` on the train loader, ``nn.BatchNorm1d`` in the
+        MLP encoder raises on the final 1-sample batch. n=33 + bs=16 gives
+        outer test=11, TrainVal=22 → batches of [16, 6] in folds where the
+        pool size is 22, and [16, 16, 1] when the pool grows to 33 - 11 = 22.
+        Use n=49, n_outer_folds=3 → TrainVal=33 → batches [16, 16, 1].
+        """
+        import tempfile
+        from src.training.nested_cross_validation import NestedCrossValidator
+
+        graphs, labels = _SyntheticNestedCV.make_dataset(n_subjects=49, seed=4)
+        with tempfile.TemporaryDirectory() as td:
+            model_cfg, trainer_cfg = _SyntheticNestedCV.make_configs(
+                td, n_repetitions=1, n_outer_folds=3, inner_hpo_trials=0,
+                batch_size=16,
+            )
+            ncv = NestedCrossValidator(cfg=trainer_cfg)
+            result = ncv.run(
+                model_factory=_SyntheticNestedCV.make_factory(model_cfg),
+                dataset=graphs,
+                labels=labels,
+                base_model_cfg=model_cfg,
+                logger=_SyntheticNestedCV.make_logger(),
+                run_name="test-singleton",
+            )
+            assert len(result.fold_results) == 3
