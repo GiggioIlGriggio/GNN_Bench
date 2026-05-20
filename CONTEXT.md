@@ -49,7 +49,17 @@ Terms are defined as used in this codebase. Synonyms in parentheses are accepted
 
 | Term | Definition | Avoid |
 |---|---|---|
-| **Fold** | One split of the dataset in K-fold cross-validation. Each fold has a train set, a val set, and a test set. | "split" (ambiguous — could mean train/val/test) |
+| **Outer fold** | One stratified split in the *outer* loop of nested CV. Holds out a test set; the remainder is the **outer TrainVal pool**. There are `n_repetitions × n_outer_folds` outer folds per run (default 10 × 5 = 50). | "fold" alone is ambiguous — say outer or inner |
+| **Repetition** | One full pass through `n_outer_folds` outer folds with its own stratification seed. The paper protocol uses 10 repetitions; the legacy fast mode uses 1. | "rep" (accepted in logs/keys), "run" (too broad) |
+| **Inner split** | A single stratified 4-way split of an outer fold's TrainVal pool into 3 train + 1 val parts (3:1 ratio). One inner split per outer fold — not a full inner CV. Used for Optuna HP selection and Trainer early stopping. | "inner fold" (we have one split, not folds), "validation split" (ambiguous with outer val) |
+| **Outer TrainVal pool** | The data left over after holding out the outer Test fold. Source for both the inner split and the final refit. | "training data" (ambiguous with inner Train) |
+| **Refit-on-TrainVal** | After Optuna picks winning HPs for an outer fold, retrain one fresh model on the full outer TrainVal pool with those HPs for a fixed epoch count equal to the winning trial's `best_epoch`. The refit checkpoint is the only one evaluated on outer Test. | "retraining" (too broad) |
+| **Inner-HPO trial** | One Optuna trial inside an outer fold: sample HPs, train on inner Train, score on inner Val using the HPO metric. `inner_hpo_trials = 0` skips Optuna entirely and falls back to fixed model-config HPs. | "trial" alone (ambiguous with `_trial_current` checkpoint dir) |
+| **HPO metric** | The scalar metric optimised by inner-loop Optuna and used as the Trainer's early-stopping signal. Default `val_mae` (minimise); `val_r2` (maximise) is supported. | "objective" (overloaded — Hydra also uses it) |
+| **Fast mode** | Preset of `NestedCrossValidator` knobs: `n_repetitions=1, n_outer_folds=5, inner_hpo_trials=0`. Reproduces the legacy single-CV behaviour. | "single CV" (was the old name) |
+| **Complete mode** | Preset of `NestedCrossValidator` knobs: `n_repetitions=10, n_outer_folds=5, inner_hpo_trials=20`. Matches the paper protocol; this is the canonical benchmark configuration. | "nested mode" (more descriptive but the user-facing knob is named) |
+| **Bouckaert–Frank test** | Corrected resampled paired t-test for comparing two models' per-outer-fold scores under repeated CV. Corrects the naive paired t-test's degrees of freedom for the dependence between scores from overlapping training sets. | "paired t-test" (the naive one is biased here) |
+| **BH-FDR correction** | Benjamini–Hochberg false-discovery-rate adjustment applied across all pairwise model comparisons within one comparison run. | "p-value correction" (too vague) |
 | **Label normalisation** | Per-fold standardisation of the scalar regression target. Fit only on training subjects; applied to val and test. Prevents data leakage. | "target scaling", "output normalisation" |
 | **Composite label** | A regression target derived from multiple raw score columns, either by weighted combination or PCA. Built per-fold by `LabelBuilder` to avoid leakage from PCA fitting. | "multi-component label" |
 | **GLM normalisation** | Per-node z-scoring of GLM feature columns across training subjects. Applied per fold to prevent leakage. Controlled by `FeatureConfig.glm_normalize`. | — |

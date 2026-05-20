@@ -23,8 +23,16 @@ early_stopping_min_delta: 1e-4
 # Label normalisation
 label_norm_strategy: standard  # standard | robust | minmax | none
 
-# Cross-validation
+# Cross-validation (nested CV — see ADR-0008)
+# Legacy ``n_folds`` is still consumed by HydraSweep; NestedCrossValidator
+# uses ``n_outer_folds`` (falls back to ``n_folds`` when null).
 n_folds: 5
+n_outer_folds: null
+n_repetitions: 1
+inner_hpo_trials: 0     # 0 disables inner Optuna (fast-mode preset)
+hpo_metric: val_mae     # val_mae | val_r2
+outer_seeds: null       # null → derived as [seed, seed+1, ..., seed+n_repetitions-1]
+search_space: null      # path to sweeper YAML; required when inner_hpo_trials > 0
 val_ratio: 0.2
 test_ratio: 0.2
 stratify_bins: 5

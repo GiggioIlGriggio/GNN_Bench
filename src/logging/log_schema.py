@@ -73,3 +73,49 @@ TRAIN_BEST_EPOCH: Final[str] = "train/best_epoch"
 PRED_SCATTER_TABLE: Final[str] = "predictions/scatter"
 PRED_Y_TRUE: Final[str] = "predictions/y_true"
 PRED_Y_PRED: Final[str] = "predictions/y_pred"
+
+# ---------------------------------------------------------------------------
+# Nested cross-validation (ADR-0008)
+#
+# Keys are built from these templates by helpers below. The wandb logger
+# must never hand-roll these strings — call the helpers instead.
+# ---------------------------------------------------------------------------
+NESTED_REP_FOLD_PREFIX_FMT: Final[str] = "rep_{r}/fold_{k}"
+NESTED_REP_FOLD_TRIAL_PREFIX_FMT: Final[str] = "rep_{r}/fold_{k}/trial_{t}"
+NESTED_FINAL_MEAN_PREFIX: Final[str] = "final/test/mean"
+NESTED_FINAL_STD_PREFIX: Final[str] = "final/test/std"
+NESTED_BEST_HPARAMS_KEY_FMT: Final[str] = "rep_{r}/fold_{k}/best_hparams"
+NESTED_BEST_TRIAL_KEY_FMT: Final[str] = "rep_{r}/fold_{k}/best_trial"
+NESTED_REFIT_EPOCHS_KEY_FMT: Final[str] = "rep_{r}/fold_{k}/refit_epochs"
+
+
+def nested_rep_fold_prefix(rep: int, fold: int) -> str:
+    """Return the wandb-key prefix for one outer fold of one repetition."""
+    return NESTED_REP_FOLD_PREFIX_FMT.format(r=rep, k=fold)
+
+
+def nested_rep_fold_trial_prefix(rep: int, fold: int, trial: int) -> str:
+    """Return the wandb-key prefix for one inner-HPO trial."""
+    return NESTED_REP_FOLD_TRIAL_PREFIX_FMT.format(r=rep, k=fold, t=trial)
+
+
+def nested_rep_fold_test_key(rep: int, fold: int, metric: str) -> str:
+    """Return the wandb key for an outer-test metric of one outer fold."""
+    return f"{nested_rep_fold_prefix(rep, fold)}/test/{metric}"
+
+
+def nested_rep_fold_trial_split_key(
+    rep: int, fold: int, trial: int, split: str, metric: str
+) -> str:
+    """Return the wandb key for an inner trial's per-epoch metric."""
+    return f"{nested_rep_fold_trial_prefix(rep, fold, trial)}/{split}/{metric}"
+
+
+def nested_final_mean_key(metric: str) -> str:
+    """Return the wandb key for the cross-fold mean of one regression metric."""
+    return f"{NESTED_FINAL_MEAN_PREFIX}/{metric}"
+
+
+def nested_final_std_key(metric: str) -> str:
+    """Return the wandb key for the cross-fold std of one regression metric."""
+    return f"{NESTED_FINAL_STD_PREFIX}/{metric}"
