@@ -51,7 +51,7 @@ from __future__ import annotations
 import copy
 import logging
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -206,49 +206,34 @@ class GNNExplainerRunner:
     ) -> Path:
         """Run GNNExplainer for every CV fold and save importance matrices.
 
-        The method replicates the identical stratified K-fold split used
-        during training (same ``trainer_cfg.seed`` and ``trainer_cfg.n_folds``)
-        so that each fold's explanation covers exactly the held-out test
-        subjects.
+        Two checkpoint layouts are supported:
 
-        For each fold the model is reconstructed from the checkpoint's saved
-        ``model_config.json`` and ``feature_config.json`` (stored by
-        :class:`~src.training.checkpoint_manager.CheckpointManager`), so the
-        architecture is always consistent with the weights even in finetuning
-        scenarios.  If these JSON files are absent, *model_factory* is used as
-        a fallback.
+        * Nested CV (``ckpt_root/rep_<R>/fold_<K>/``) — selected when
+          ``ckpt_root/nested_cv_result.json`` is present. Outer splits are
+          reconstructed from the persisted ``outer_seeds``. Per-fold outputs
+          land under ``explanations/rep_<R>/fold_<K>/``; when
+          ``n_repetitions > 1`` cross-rep mean/std maps are also written
+          under ``explanations/aggregate/``.
+        * Legacy (``ckpt_root/fold_<K>/``) — used otherwise. Splits are
+          reconstructed via :class:`~src.training.cross_validation.CrossValidator`
+          and per-fold outputs land under ``explanations/fold_<K>/``.
+
+        For every fold the model is reconstructed from the checkpoint's saved
+        ``model_config.json`` / ``feature_config.json`` (written by
+        :class:`~src.training.checkpoint_manager.CheckpointManager`).
+        *model_factory* is used as a fallback only when those files are
+        absent.
 
         Parameters
         ----------
-        dataset : List[Data]
-            Full list of PyG graph objects (same order as passed to training).
-        labels : np.ndarray
-            Scalar labels of shape ``[N]``, used only for stratified splitting.
-        model_factory : Callable
-            Fallback factory used when ``model_config.json`` is absent from a
-            fold checkpoint directory.
-        trainer_cfg : TrainerConfig
-            Training configuration — used for ``checkpoint_dir``, ``n_folds``,
-            ``seed``, ``device``, and ``stratify_bins``.
-        glm_col_range : Optional[Tuple[int, int]]
-            Column range of GLM features in ``data.x``.  When supplied, per-
-            node z-scoring is re-applied per fold (fit on train only) to match
-            the exact normalisation state seen by the model during training.
-        glm_normalize : bool
-            Whether GLM normalisation was active during training.
+        dataset, labels, model_factory, trainer_cfg, glm_col_range, glm_normalize
+            See class-level docs.
 
         Returns
         -------
         Path
             The directory where explanation outputs were saved.
         """
-        from torch_geometric.explain import Explainer, GNNExplainer
-        from torch_geometric.explain.config import ModelConfig as ExplainerModelConfig
-
-        from src.training.checkpoint_manager import CheckpointManager
-        from src.training.cross_validation import CrossValidator
-        from src.training.glm_normalizer import GLMFeatureNormalizer
-
         # --- Resolve output directory ----------------------------------------
         if self.cfg.output_dir:
             output_dir = Path(self.cfg.output_dir)
@@ -284,171 +269,84 @@ class GNNExplainerRunner:
                 resolved_edge_size,
             )
 
-        # --- Re-create the same K-fold split ---------------------------------
+        ckpt_root = Path(trainer_cfg.checkpoint_dir)
+        if (ckpt_root / "nested_cv_result.json").exists():
+            return self._run_nested(
+                ckpt_root=ckpt_root,
+                output_dir=output_dir,
+                dataset=dataset,
+                labels=labels,
+                model_factory=model_factory,
+                trainer_cfg=trainer_cfg,
+                device=device,
+                resolved_edge_size=resolved_edge_size,
+                glm_col_range=glm_col_range,
+                glm_normalize=glm_normalize,
+            )
+        return self._run_legacy(
+            ckpt_root=ckpt_root,
+            output_dir=output_dir,
+            dataset=dataset,
+            labels=labels,
+            model_factory=model_factory,
+            trainer_cfg=trainer_cfg,
+            device=device,
+            resolved_edge_size=resolved_edge_size,
+            glm_col_range=glm_col_range,
+            glm_normalize=glm_normalize,
+        )
+
+    # ------------------------------------------------------------------
+    # Layout dispatchers
+    # ------------------------------------------------------------------
+
+    def _run_legacy(
+        self,
+        *,
+        ckpt_root: Path,
+        output_dir: Path,
+        dataset: List[torch_geometric.data.Data],
+        labels: np.ndarray,
+        model_factory: Callable[[], torch.nn.Module],
+        trainer_cfg: TrainerConfig,
+        device: torch.device,
+        resolved_edge_size: float,
+        glm_col_range: Optional[Tuple[int, int]],
+        glm_normalize: bool,
+    ) -> Path:
+        from src.training.cross_validation import CrossValidator
+
         cross_validator = CrossValidator(cfg=trainer_cfg)
         fold_splits = list(cross_validator.split(dataset, labels))
         n_folds = len(fold_splits)
 
-        ckpt_root = Path(trainer_cfg.checkpoint_dir)
         fold_importance_matrices: List[np.ndarray] = []
-
         for fold_idx, (train_idx, _val_idx, test_idx) in enumerate(fold_splits):
             _console.rule(
                 f"[bold cyan]GNNExplainer — Fold {fold_idx + 1}/{n_folds}[/]  "
                 f"[dim](test: {len(test_idx)} subjects)[/]",
                 style="cyan dim",
             )
-
-            # --- Load best checkpoint ----------------------------------------
-            ckpt_path = ckpt_root / f"fold_{fold_idx}" / "model_best.pt"
-            if not ckpt_path.exists():
-                log.warning(
-                    "Checkpoint not found: %s — skipping fold %d.",
-                    ckpt_path,
-                    fold_idx,
-                )
-                continue
-
-            num_nodes = dataset[0].num_nodes if dataset else 0
-            model, _ = CheckpointManager(ckpt_root).load_model_for_fold(
-                fold_idx, model_factory, num_nodes, variant="best"
+            fold_ckpt_dir = ckpt_root / f"fold_{fold_idx}"
+            fold_out_dir = output_dir / f"fold_{fold_idx}"
+            fold_avg = self._explain_one_fold(
+                fold_ckpt_root=ckpt_root,
+                fold_idx=fold_idx,
+                fold_ckpt_dir=fold_ckpt_dir,
+                fold_out_dir=fold_out_dir,
+                train_idx=list(train_idx),
+                test_idx=list(test_idx),
+                dataset=dataset,
+                model_factory=model_factory,
+                device=device,
+                resolved_edge_size=resolved_edge_size,
+                glm_col_range=glm_col_range,
+                glm_normalize=glm_normalize,
+                fold_log_tag=f"Fold {fold_idx}",
             )
-            model.eval()
-            model.to(device)
-            log.debug("Loaded model weights from %s", ckpt_path)
+            if fold_avg is not None:
+                fold_importance_matrices.append(fold_avg)
 
-            # --- Build test graphs (shallow-copy + GLM normalization) ---------
-            test_graphs = [copy.copy(dataset[i]) for i in test_idx]
-
-            if glm_col_range is not None and glm_normalize:
-                col_start, col_end = glm_col_range
-                glm_norm = GLMFeatureNormalizer(col_start, col_end)
-                train_graphs_for_norm = [copy.copy(dataset[i]) for i in train_idx]
-                glm_norm.fit(train_graphs_for_norm)
-                glm_norm.transform(test_graphs)
-                log.debug(
-                    "Fold %d: GLM features (cols [%d:%d)) z-scored on %d "
-                    "train subjects and applied to %d test subjects.",
-                    fold_idx,
-                    col_start,
-                    col_end,
-                    len(train_idx),
-                    len(test_idx),
-                )
-
-            # --- Build explainer (one per fold to rebind model) ---------------
-            wrapped_model = _DataWrapper(model)
-
-            explainer = Explainer(
-                model=wrapped_model,
-                algorithm=GNNExplainer(
-                    epochs=self.cfg.epochs,
-                    lr=self.cfg.lr,
-                    coeffs={
-                        "edge_size": resolved_edge_size,
-                        "edge_ent": self.cfg.edge_ent,
-                        "node_feat_size": self.cfg.node_feat_size,
-                        "node_feat_ent": self.cfg.node_feat_ent,
-                    },
-                ),
-                explanation_type="model",
-                edge_mask_type="object",
-                node_mask_type=self.cfg.node_mask_type,
-                model_config=ExplainerModelConfig(
-                    mode="regression",
-                    task_level="graph",
-                    return_type="raw",
-                ),
-            )
-
-            # --- Explain each test subject ------------------------------------
-            fold_matrices: List[np.ndarray] = []
-            fold_output_dir = output_dir / f"fold_{fold_idx}"
-
-            if self.cfg.save_subject_masks:
-                subjects_dir = fold_output_dir / "subjects"
-                subjects_dir.mkdir(parents=True, exist_ok=True)
-
-            with Progress(
-                SpinnerColumn(style="cyan"),
-                MofNCompleteColumn(),
-                BarColumn(bar_width=28, style="cyan", complete_style="bold cyan"),
-                TextColumn("[dim]{task.description}[/]"),
-                TimeElapsedColumn(),
-                console=_console,
-                transient=False,
-            ) as progress:
-                task = progress.add_task(
-                    "explaining subjects",
-                    total=len(test_graphs),
-                )
-
-                for graph_local_idx, g in enumerate(test_graphs):
-                    subject_id = getattr(g, "subject_id", f"subject_{graph_local_idx:04d}")
-                    progress.update(task, description=f"subject [bold]{subject_id}[/]")
-
-                    x = g.x.to(device)
-                    edge_index = g.edge_index.to(device)
-                    edge_attr = g.edge_attr.to(device) if g.edge_attr is not None else None
-                    num_nodes = g.num_nodes
-
-                    # GNNExplainer needs edge attributes forwarded as kwargs
-                    kwargs = {}
-                    if edge_attr is not None:
-                        kwargs["edge_attr"] = edge_attr
-
-                    try:
-                        explanation = explainer(
-                            x=x,
-                            edge_index=edge_index,
-                            **kwargs,
-                        )
-                    except Exception as exc:
-                        log.warning(
-                            "Fold %d, subject %s: GNNExplainer failed (%s). Skipping.",
-                            fold_idx,
-                            subject_id,
-                            exc,
-                        )
-                        progress.advance(task)
-                        continue
-
-                    edge_mask = explanation.edge_mask.detach().cpu()
-
-                    # Save per-subject edge mask tensor
-                    if self.cfg.save_subject_masks:
-                        mask_path = subjects_dir / f"{subject_id}_edge_mask.pt"
-                        torch.save(edge_mask, mask_path)
-
-                    # Build NxN importance matrix for this subject
-                    importance_mat = _edge_mask_to_importance_matrix(
-                        edge_index.cpu(), edge_mask, num_nodes
-                    )
-                    fold_matrices.append(importance_mat)
-                    progress.advance(task)
-
-            if not fold_matrices:
-                log.warning("Fold %d: no valid explanations produced.", fold_idx)
-                continue
-
-            # --- Average across test subjects in this fold -------------------
-            fold_avg = np.mean(np.stack(fold_matrices, axis=0), axis=0)
-            fold_std = np.std(np.stack(fold_matrices, axis=0), axis=0)
-
-            fold_output_dir.mkdir(parents=True, exist_ok=True)
-            np.save(fold_output_dir / "importance_matrix.npy", fold_avg)
-            np.save(fold_output_dir / "importance_matrix_std.npy", fold_std)
-            log.info(
-                "Fold %d: average importance matrix saved (N=%d, "
-                "max_importance=%.4f).",
-                fold_idx,
-                fold_avg.shape[0],
-                float(fold_avg.max()),
-            )
-
-            fold_importance_matrices.append(fold_avg)
-
-        # --- Average across folds and save -----------------------------------
         if not fold_importance_matrices:
             log.error(
                 "No fold explanations were produced.  Check checkpoints and "
@@ -458,10 +356,8 @@ class GNNExplainerRunner:
 
         global_avg = np.mean(np.stack(fold_importance_matrices, axis=0), axis=0)
         global_std = np.std(np.stack(fold_importance_matrices, axis=0), axis=0)
-
         np.save(output_dir / "importance_matrix_avg.npy", global_avg)
         np.save(output_dir / "importance_matrix_std.npy", global_std)
-
         log.info(
             "GNNExplainer complete — global importance matrix saved to %s  "
             "(N=%d, max=%.4f, mean=%.4f).",
@@ -470,11 +366,259 @@ class GNNExplainerRunner:
             float(global_avg.max()),
             float(global_avg.mean()),
         )
-
-        # Log a short summary of the top-10 most important edges
         self._log_top_edges(global_avg)
-
         return output_dir
+
+    def _run_nested(
+        self,
+        *,
+        ckpt_root: Path,
+        output_dir: Path,
+        dataset: List[torch_geometric.data.Data],
+        labels: np.ndarray,
+        model_factory: Callable[[], torch.nn.Module],
+        trainer_cfg: TrainerConfig,
+        device: torch.device,
+        resolved_edge_size: float,
+        glm_col_range: Optional[Tuple[int, int]],
+        glm_normalize: bool,
+    ) -> Path:
+        import json as _json
+
+        import pandas as pd
+        from sklearn.model_selection import StratifiedKFold
+
+        with open(ckpt_root / "nested_cv_result.json") as f:
+            nested_meta = _json.load(f)
+        outer_seeds: List[int] = list(nested_meta["outer_seeds"])
+        n_outer = int(nested_meta["n_outer_folds"])
+        n_repetitions = int(nested_meta["n_repetitions"])
+        log.info(
+            "Nested layout detected — reps=%d  outer_folds=%d  seeds=%s",
+            n_repetitions, n_outer, outer_seeds,
+        )
+
+        # Same bin construction as NestedCrossValidator so splits match.
+        bins = pd.qcut(
+            labels, q=trainer_cfg.stratify_bins, labels=False, duplicates="drop",
+        )
+
+        # fold_matrices_by_idx[k] = list of per-rep mean importance matrices for outer fold k
+        fold_matrices_by_idx: Dict[int, List[np.ndarray]] = {k: [] for k in range(n_outer)}
+        all_matrices: List[np.ndarray] = []
+
+        for rep, seed in enumerate(outer_seeds):
+            skf = StratifiedKFold(
+                n_splits=n_outer, shuffle=True, random_state=seed,
+            )
+            for fold_idx, (train_val_idx, test_idx) in enumerate(
+                skf.split(np.arange(len(dataset)), bins)
+            ):
+                _console.rule(
+                    f"[bold cyan]GNNExplainer — rep {rep + 1}/{n_repetitions} "
+                    f"fold {fold_idx + 1}/{n_outer}[/]  "
+                    f"[dim](test: {len(test_idx)} subjects)[/]",
+                    style="cyan dim",
+                )
+                fold_ckpt_dir = ckpt_root / f"rep_{rep}" / f"fold_{fold_idx}"
+                fold_out_dir = output_dir / f"rep_{rep}" / f"fold_{fold_idx}"
+                # NestedCrossValidator refits the outer model on the
+                # full outer-TrainVal pool, so GLM normalisation must
+                # be re-fit on that same pool — not on the inner-train slice.
+                fold_avg = self._explain_one_fold(
+                    fold_ckpt_root=ckpt_root / f"rep_{rep}",
+                    fold_idx=fold_idx,
+                    fold_ckpt_dir=fold_ckpt_dir,
+                    fold_out_dir=fold_out_dir,
+                    train_idx=train_val_idx.tolist(),
+                    test_idx=test_idx.tolist(),
+                    dataset=dataset,
+                    model_factory=model_factory,
+                    device=device,
+                    resolved_edge_size=resolved_edge_size,
+                    glm_col_range=glm_col_range,
+                    glm_normalize=glm_normalize,
+                    fold_log_tag=f"rep={rep} fold={fold_idx}",
+                )
+                if fold_avg is not None:
+                    fold_matrices_by_idx[fold_idx].append(fold_avg)
+                    all_matrices.append(fold_avg)
+
+        if not all_matrices:
+            log.error(
+                "No fold explanations were produced.  Check checkpoints and "
+                "enable logging at DEBUG level for details."
+            )
+            return output_dir
+
+        global_avg = np.mean(np.stack(all_matrices, axis=0), axis=0)
+        global_std = np.std(np.stack(all_matrices, axis=0), axis=0)
+        np.save(output_dir / "importance_matrix_avg.npy", global_avg)
+        np.save(output_dir / "importance_matrix_std.npy", global_std)
+        log.info(
+            "GNNExplainer complete — global importance matrix saved to %s  "
+            "(N=%d, max=%.4f, mean=%.4f).",
+            output_dir,
+            global_avg.shape[0],
+            float(global_avg.max()),
+            float(global_avg.mean()),
+        )
+        self._log_top_edges(global_avg)
+        return output_dir
+
+    # ------------------------------------------------------------------
+    # Per-fold worker
+    # ------------------------------------------------------------------
+
+    def _explain_one_fold(
+        self,
+        *,
+        fold_ckpt_root: Path,
+        fold_idx: int,
+        fold_ckpt_dir: Path,
+        fold_out_dir: Path,
+        train_idx: List[int],
+        test_idx: List[int],
+        dataset: List[torch_geometric.data.Data],
+        model_factory: Callable[[], torch.nn.Module],
+        device: torch.device,
+        resolved_edge_size: float,
+        glm_col_range: Optional[Tuple[int, int]],
+        glm_normalize: bool,
+        fold_log_tag: str,
+    ) -> Optional[np.ndarray]:
+        """Explain one outer fold; return the per-fold mean importance matrix.
+
+        ``fold_ckpt_root`` is the directory whose ``CheckpointManager`` view
+        treats ``fold_<fold_idx>`` as a child — i.e. ``ckpt_root`` in the
+        legacy layout and ``ckpt_root/rep_<R>`` in the nested layout.
+        """
+        from torch_geometric.explain import Explainer, GNNExplainer
+        from torch_geometric.explain.config import ModelConfig as ExplainerModelConfig
+
+        from src.training.checkpoint_manager import CheckpointManager
+        from src.training.glm_normalizer import GLMFeatureNormalizer
+
+        ckpt_path = fold_ckpt_dir / "model_best.pt"
+        if not ckpt_path.exists():
+            log.warning(
+                "Checkpoint not found: %s — skipping %s.",
+                ckpt_path, fold_log_tag,
+            )
+            return None
+
+        num_nodes = dataset[0].num_nodes if dataset else 0
+        model, _ = CheckpointManager(fold_ckpt_root).load_model_for_fold(
+            fold_idx, model_factory, num_nodes, variant="best",
+        )
+        model.eval()
+        model.to(device)
+        log.debug("Loaded model weights from %s", ckpt_path)
+
+        test_graphs = [copy.copy(dataset[i]) for i in test_idx]
+
+        if glm_col_range is not None and glm_normalize:
+            col_start, col_end = glm_col_range
+            glm_norm = GLMFeatureNormalizer(col_start, col_end)
+            train_graphs_for_norm = [copy.copy(dataset[i]) for i in train_idx]
+            glm_norm.fit(train_graphs_for_norm)
+            glm_norm.transform(test_graphs)
+            log.debug(
+                "%s: GLM features (cols [%d:%d)) z-scored on %d train "
+                "subjects and applied to %d test subjects.",
+                fold_log_tag, col_start, col_end, len(train_idx), len(test_idx),
+            )
+
+        wrapped_model = _DataWrapper(model)
+        explainer = Explainer(
+            model=wrapped_model,
+            algorithm=GNNExplainer(
+                epochs=self.cfg.epochs,
+                lr=self.cfg.lr,
+                coeffs={
+                    "edge_size": resolved_edge_size,
+                    "edge_ent": self.cfg.edge_ent,
+                    "node_feat_size": self.cfg.node_feat_size,
+                    "node_feat_ent": self.cfg.node_feat_ent,
+                },
+            ),
+            explanation_type="model",
+            edge_mask_type="object",
+            node_mask_type=self.cfg.node_mask_type,
+            model_config=ExplainerModelConfig(
+                mode="regression",
+                task_level="graph",
+                return_type="raw",
+            ),
+        )
+
+        fold_matrices: List[np.ndarray] = []
+        if self.cfg.save_subject_masks:
+            subjects_dir = fold_out_dir / "subjects"
+            subjects_dir.mkdir(parents=True, exist_ok=True)
+
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            MofNCompleteColumn(),
+            BarColumn(bar_width=28, style="cyan", complete_style="bold cyan"),
+            TextColumn("[dim]{task.description}[/]"),
+            TimeElapsedColumn(),
+            console=_console,
+            transient=False,
+        ) as progress:
+            task = progress.add_task(
+                "explaining subjects", total=len(test_graphs),
+            )
+            for graph_local_idx, g in enumerate(test_graphs):
+                subject_id = getattr(
+                    g, "subject_id", f"subject_{graph_local_idx:04d}",
+                )
+                progress.update(task, description=f"subject [bold]{subject_id}[/]")
+
+                x = g.x.to(device)
+                edge_index = g.edge_index.to(device)
+                edge_attr = g.edge_attr.to(device) if g.edge_attr is not None else None
+                num_nodes = g.num_nodes
+
+                kwargs = {}
+                if edge_attr is not None:
+                    kwargs["edge_attr"] = edge_attr
+
+                try:
+                    explanation = explainer(x=x, edge_index=edge_index, **kwargs)
+                except Exception as exc:
+                    log.warning(
+                        "%s subject %s: GNNExplainer failed (%s). Skipping.",
+                        fold_log_tag, subject_id, exc,
+                    )
+                    progress.advance(task)
+                    continue
+
+                edge_mask = explanation.edge_mask.detach().cpu()
+                if self.cfg.save_subject_masks:
+                    mask_path = subjects_dir / f"{subject_id}_edge_mask.pt"
+                    torch.save(edge_mask, mask_path)
+
+                importance_mat = _edge_mask_to_importance_matrix(
+                    edge_index.cpu(), edge_mask, num_nodes,
+                )
+                fold_matrices.append(importance_mat)
+                progress.advance(task)
+
+        if not fold_matrices:
+            log.warning("%s: no valid explanations produced.", fold_log_tag)
+            return None
+
+        fold_avg = np.mean(np.stack(fold_matrices, axis=0), axis=0)
+        fold_std = np.std(np.stack(fold_matrices, axis=0), axis=0)
+        fold_out_dir.mkdir(parents=True, exist_ok=True)
+        np.save(fold_out_dir / "importance_matrix.npy", fold_avg)
+        np.save(fold_out_dir / "importance_matrix_std.npy", fold_std)
+        log.info(
+            "%s: average importance matrix saved (N=%d, max=%.4f).",
+            fold_log_tag, fold_avg.shape[0], float(fold_avg.max()),
+        )
+        return fold_avg
 
     # ------------------------------------------------------------------
     # Private helpers
