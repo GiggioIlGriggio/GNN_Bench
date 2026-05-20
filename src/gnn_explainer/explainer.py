@@ -407,7 +407,17 @@ class GNNExplainerRunner:
         fold_matrices_by_idx: Dict[int, List[np.ndarray]] = {k: [] for k in range(n_outer)}
         all_matrices: List[np.ndarray] = []
 
+        if self.cfg.rep is not None and not (
+            0 <= self.cfg.rep < n_repetitions
+        ):
+            raise ValueError(
+                f"explainer.rep={self.cfg.rep} is outside the available range "
+                f"[0, {n_repetitions})"
+            )
+
         for rep, seed in enumerate(outer_seeds):
+            if self.cfg.rep is not None and rep != self.cfg.rep:
+                continue
             skf = StratifiedKFold(
                 n_splits=n_outer, shuffle=True, random_state=seed,
             )
@@ -450,6 +460,19 @@ class GNNExplainerRunner:
                 "enable logging at DEBUG level for details."
             )
             return output_dir
+
+        # Per-fold cross-rep aggregation. Only meaningful when more than one
+        # repetition contributed maps for that fold index, but we always write
+        # the directory so downstream readers don't have to special-case n_rep=1.
+        aggregate_dir = output_dir / "aggregate"
+        for fold_idx, mats in fold_matrices_by_idx.items():
+            if not mats:
+                continue
+            fold_agg_dir = aggregate_dir / f"fold_{fold_idx}"
+            fold_agg_dir.mkdir(parents=True, exist_ok=True)
+            stack = np.stack(mats, axis=0)
+            np.save(fold_agg_dir / "importance_matrix_avg.npy", stack.mean(axis=0))
+            np.save(fold_agg_dir / "importance_matrix_std.npy", stack.std(axis=0))
 
         global_avg = np.mean(np.stack(all_matrices, axis=0), axis=0)
         global_std = np.std(np.stack(all_matrices, axis=0), axis=0)

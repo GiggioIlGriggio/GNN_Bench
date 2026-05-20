@@ -274,3 +274,145 @@ class TestNestedCheckpointLayout:
                 mat = np.load(path)
                 assert mat.shape == (6, 6)
                 assert mat.dtype == np.float32
+
+
+class TestNestedAggregation:
+    """When n_repetitions > 1 the explainer aggregates maps across reps."""
+
+    def test_writes_aggregate_per_fold_mean_and_std(
+        self, tmp_path: Path
+    ) -> None:
+        graphs, labels = _make_synthetic_dataset(n_subjects=24, n_rois=6, seed=1)
+        ckpt_root = tmp_path / "ckpt"
+        ckpt_root.mkdir()
+        _build_nested_checkpoint_tree(
+            ckpt_root,
+            labels,
+            n_repetitions=2,
+            n_outer_folds=3,
+            stratify_bins=4,
+            num_nodes=6,
+        )
+        trainer_cfg = _make_trainer_cfg(
+            ckpt_root, n_outer_folds=3, n_repetitions=2, stratify_bins=4
+        )
+        explainer_cfg = ExplainerConfig(
+            enabled=True, epochs=1, edge_size=0.1, save_subject_masks=False,
+        )
+
+        runner = GNNExplainerRunner(cfg=explainer_cfg)
+        output_dir = runner.run(
+            dataset=graphs,
+            labels=labels,
+            model_factory=_model_factory(feat_dim=3, num_nodes=6),
+            trainer_cfg=trainer_cfg,
+        )
+
+        aggregate_dir = output_dir / "aggregate"
+        assert aggregate_dir.is_dir(), "expected explanations/aggregate/"
+        for fold in range(3):
+            mean_path = aggregate_dir / f"fold_{fold}" / "importance_matrix_avg.npy"
+            std_path = aggregate_dir / f"fold_{fold}" / "importance_matrix_std.npy"
+            assert mean_path.exists(), f"missing aggregate mean: {mean_path}"
+            assert std_path.exists(), f"missing aggregate std: {std_path}"
+            mean_mat = np.load(mean_path)
+            std_mat = np.load(std_path)
+            assert mean_mat.shape == (6, 6)
+            assert std_mat.shape == (6, 6)
+
+            # The aggregate mean must equal the average of the per-rep maps
+            # for that fold index.
+            per_rep = np.stack(
+                [
+                    np.load(output_dir / f"rep_{r}" / f"fold_{fold}" / "importance_matrix.npy")
+                    for r in range(2)
+                ],
+                axis=0,
+            )
+            np.testing.assert_allclose(mean_mat, per_rep.mean(axis=0), atol=1e-6)
+            np.testing.assert_allclose(std_mat, per_rep.std(axis=0), atol=1e-6)
+
+
+class TestRepRestriction:
+    """``ExplainerConfig.rep`` restricts the explainer to one repetition."""
+
+    def test_only_requested_rep_is_written(self, tmp_path: Path) -> None:
+        graphs, labels = _make_synthetic_dataset(n_subjects=24, n_rois=6, seed=2)
+        ckpt_root = tmp_path / "ckpt"
+        ckpt_root.mkdir()
+        _build_nested_checkpoint_tree(
+            ckpt_root,
+            labels,
+            n_repetitions=3,
+            n_outer_folds=2,
+            stratify_bins=4,
+            num_nodes=6,
+        )
+        trainer_cfg = _make_trainer_cfg(
+            ckpt_root, n_outer_folds=2, n_repetitions=3, stratify_bins=4
+        )
+        explainer_cfg = ExplainerConfig(
+            enabled=True,
+            epochs=1,
+            edge_size=0.1,
+            save_subject_masks=False,
+            rep=1,
+        )
+
+        runner = GNNExplainerRunner(cfg=explainer_cfg)
+        output_dir = runner.run(
+            dataset=graphs,
+            labels=labels,
+            model_factory=_model_factory(feat_dim=3, num_nodes=6),
+            trainer_cfg=trainer_cfg,
+        )
+
+        # Only rep_1/ should have outputs.
+        assert (output_dir / "rep_1").is_dir()
+        assert not (output_dir / "rep_0").exists()
+        assert not (output_dir / "rep_2").exists()
+        for fold in range(2):
+            assert (output_dir / "rep_1" / f"fold_{fold}" / "importance_matrix.npy").exists()
+
+
+class TestLegacyLayoutFallback:
+    """Without ``nested_cv_result.json`` the explainer keeps walking ``fold_<K>/``."""
+
+    def test_legacy_layout_writes_per_fold_outputs(
+        self, tmp_path: Path
+    ) -> None:
+        graphs, labels = _make_synthetic_dataset(n_subjects=24, n_rois=6, seed=3)
+        ckpt_root = tmp_path / "ckpt"
+        ckpt_root.mkdir()
+        _build_legacy_checkpoint_tree(
+            ckpt_root, n_folds=3, num_nodes=6, labels=labels,
+        )
+
+        # Legacy CrossValidator needs n_folds set; nested fields stay at default.
+        trainer_cfg = TrainerConfig(
+            epochs=1,
+            early_stopping_patience=1,
+            n_folds=3,
+            inner_hpo_trials=0,
+            hpo_metric="val_mae",
+            checkpoint_dir=str(ckpt_root),
+            stratify_bins=4,
+            device="cpu",
+            seed=11,
+        )
+        explainer_cfg = ExplainerConfig(
+            enabled=True, epochs=1, edge_size=0.1, save_subject_masks=False,
+        )
+        runner = GNNExplainerRunner(cfg=explainer_cfg)
+        output_dir = runner.run(
+            dataset=graphs,
+            labels=labels,
+            model_factory=_model_factory(feat_dim=3, num_nodes=6),
+            trainer_cfg=trainer_cfg,
+        )
+
+        # No nested directories; legacy fold dirs only.
+        for fold in range(3):
+            assert (output_dir / f"fold_{fold}" / "importance_matrix.npy").exists()
+        assert not (output_dir / "rep_0").exists()
+        assert not (output_dir / "aggregate").exists()
