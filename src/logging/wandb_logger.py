@@ -297,6 +297,119 @@ class WandbLogger:
         # Instead, let step auto-increment and use pretrain_epoch as logged data.
         wandb.log(log_data, commit=True)
 
+    # ------------------------------------------------------------------
+    # Nested cross-validation logging (ADR-0008)
+    # ------------------------------------------------------------------
+
+    def log_nested_trial_metrics(
+        self,
+        rep: int,
+        fold: int,
+        trial: int,
+        split: str,
+        metrics: MetricDict,
+        epoch: Optional[int] = None,
+    ) -> None:
+        """Log per-epoch metrics for one inner-HPO trial under ``rep_<r>/fold_<k>/trial_<t>/<split>/...``.
+
+        Parameters
+        ----------
+        rep : int
+            Zero-based outer repetition index.
+        fold : int
+            Zero-based outer fold index.
+        trial : int
+            Zero-based Optuna trial index within this outer fold.
+        split : str
+            ``"train"`` or ``"val"``.
+        metrics : MetricDict
+            Metric → value mapping.
+        epoch : Optional[int]
+            Inner training epoch index.
+        """
+        if not self.cfg.enabled:
+            return
+        import wandb
+        from src.logging.log_schema import nested_rep_fold_trial_split_key
+
+        log_data = {
+            nested_rep_fold_trial_split_key(rep, fold, trial, split, k): v
+            for k, v in metrics.items()
+        }
+        if epoch is not None:
+            log_data[f"rep_{rep}/fold_{fold}/trial_{trial}/{split}/epoch"] = epoch
+        wandb.log(log_data)
+
+    def log_nested_outer_test(
+        self,
+        rep: int,
+        fold: int,
+        metrics: MetricDict,
+    ) -> None:
+        """Log outer-test metrics for one outer fold under ``rep_<r>/fold_<k>/test/...``."""
+        if not self.cfg.enabled:
+            return
+        import wandb
+        from src.logging.log_schema import nested_rep_fold_test_key
+
+        log_data = {
+            nested_rep_fold_test_key(rep, fold, k): v for k, v in metrics.items()
+        }
+        wandb.log(log_data)
+
+    def log_nested_best_hparams(
+        self,
+        rep: int,
+        fold: int,
+        best_hparams: Dict[str, object],
+        best_trial: int,
+        refit_epochs: int,
+    ) -> None:
+        """Log the chosen hyperparameters for one outer fold."""
+        if not self.cfg.enabled:
+            return
+        import wandb
+        from src.logging.log_schema import (
+            NESTED_BEST_HPARAMS_KEY_FMT,
+            NESTED_BEST_TRIAL_KEY_FMT,
+            NESTED_REFIT_EPOCHS_KEY_FMT,
+        )
+
+        wandb.log({
+            NESTED_BEST_HPARAMS_KEY_FMT.format(r=rep, k=fold): best_hparams,
+            NESTED_BEST_TRIAL_KEY_FMT.format(r=rep, k=fold): best_trial,
+            NESTED_REFIT_EPOCHS_KEY_FMT.format(r=rep, k=fold): refit_epochs,
+        })
+
+    def log_nested_final_summary(
+        self,
+        mean: MetricDict,
+        std: MetricDict,
+    ) -> None:
+        """Log cross-fold mean and std of the outer-test metrics.
+
+        Parameters
+        ----------
+        mean : MetricDict
+            Mean of each metric across all ``n_repetitions × n_outer_folds`` outer folds.
+        std : MetricDict
+            Standard deviation across the same population.
+        """
+        if not self.cfg.enabled:
+            return
+        import wandb
+        from src.logging.log_schema import (
+            nested_final_mean_key,
+            nested_final_std_key,
+        )
+
+        log_data: Dict[str, float] = {}
+        for k, v in mean.items():
+            log_data[nested_final_mean_key(k)] = v
+        for k, v in std.items():
+            log_data[nested_final_std_key(k)] = v
+        wandb.log(log_data)
+
     def log_prediction_scatter(
         self,
         y_true: np.ndarray,
