@@ -397,32 +397,56 @@ def main(cfg: DictConfig) -> None:
                                  glm_col_range, feature_cfg.glm_normalize)
 
     # ------------------------------------------------------------------
-    # 9) Else → standard cross-validation
+    # 9) Else → nested cross-validation (ADR-0008)
     # ------------------------------------------------------------------
     else:
-        from src.training.cross_validation import CrossValidator
-        from src.training.trainer import Trainer
+        from src.training.nested_cross_validation import NestedCrossValidator
 
-        trainer = Trainer(cfg=trainer_cfg, logger=logger)
-        cross_validator = CrossValidator(cfg=trainer_cfg)
+        def nested_model_factory(trial_model_cfg):
+            return get_model(
+                name=trial_model_cfg.name,
+                cfg=trial_model_cfg,
+                node_feat_dim=feature_cfg.node_feat_dim,
+                edge_feat_dim=feature_cfg.edge_feat_dim,
+                num_nodes=graphs[0].num_nodes if graphs else 0,
+            )
 
-        log.info("Starting %d-fold cross-validation...", trainer_cfg.n_folds)
-        results = cross_validator.run(
-            model_factory=model_factory,
+        ncv = NestedCrossValidator(
+            cfg=trainer_cfg, search_space_path=trainer_cfg.search_space,
+        )
+        log.info(
+            "Starting nested CV — reps=%d  outer_folds=%d  inner_trials=%d  hpo_metric=%s",
+            trainer_cfg.n_repetitions,
+            trainer_cfg.effective_n_outer_folds,
+            trainer_cfg.inner_hpo_trials,
+            trainer_cfg.hpo_metric,
+        )
+        nested_result = ncv.run(
+            model_factory=nested_model_factory,
             dataset=graphs,
             labels=labels,
-            trainer=trainer,
+            base_model_cfg=model_cfg,
+            logger=logger,
+            run_name=cfg.experiment_name,
             label_builder=label_builder,
             label_components=label_components,
             glm_col_range=glm_col_range,
             glm_normalize=feature_cfg.glm_normalize,
-            model_config=model_cfg.model_dump(),
             feature_config=feature_cfg.model_dump(),
         )
-        log.info("Cross-validation complete")
-        _log_cv_results(results, logger)
-        _maybe_run_explainer(explainer_cfg, graphs, labels, model_factory, trainer_cfg,
-                             glm_col_range, feature_cfg.glm_normalize)
+        log.info(
+            "Nested CV complete — mean=%s  std=%s",
+            nested_result.mean_metrics, nested_result.std_metrics,
+        )
+        if explainer_cfg.enabled:
+            # The legacy GNNExplainerRunner walks fold_<K>/ directly under
+            # checkpoint_dir; nested CV writes rep_<R>/fold_<K>/ so the
+            # explainer needs an update before it can run on nested outputs.
+            log.warning(
+                "GNNExplainer is enabled but the nested-CV checkpoint layout "
+                "(rep_<R>/fold_<K>/) is not yet supported by GNNExplainerRunner. "
+                "Skipping; see ADR-0008 follow-ups."
+            )
 
     # ------------------------------------------------------------------
     # 10) Finish wandb run and (for sweep trials) return the objective

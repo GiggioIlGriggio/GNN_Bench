@@ -119,6 +119,14 @@ class TrainerConfig(BaseModel):
             "``r in range(n_repetitions)``."
         ),
     )
+    search_space: Optional[str] = Field(
+        default=None,
+        description=(
+            "Path to a sweeper YAML (e.g. ``configs/sweeper/bayesian.yaml``) "
+            "whose ``params:`` block defines the inner HPO search space. "
+            "Required when ``inner_hpo_trials > 0``."
+        ),
+    )
     val_ratio: float = Field(
         default=0.1,
         description="Fraction of training data held out for validation within each fold.",
@@ -199,6 +207,11 @@ class TrainerConfig(BaseModel):
             raise ValueError(
                 f"outer_seeds has length {len(self.outer_seeds)} but "
                 f"n_repetitions={self.n_repetitions}"
+            )
+        if self.inner_hpo_trials > 0 and not self.search_space:
+            raise ValueError(
+                "inner_hpo_trials > 0 requires trainer.search_space to point "
+                "at a sweeper YAML (e.g. configs/sweeper/bayesian.yaml)"
             )
         return self
 
