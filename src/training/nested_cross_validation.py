@@ -251,6 +251,13 @@ class NestedCrossValidator:
                 "or both be None."
             )
 
+        n_outer = self.cfg.effective_n_outer_folds
+        if n_outer < 2:
+            raise ValueError(
+                f"NestedCrossValidator requires effective_n_outer_folds >= 2, "
+                f"got {n_outer} (n_outer_folds={self.cfg.n_outer_folds}, "
+                f"n_folds={self.cfg.n_folds})"
+            )
         if self.cfg.inner_hpo_trials > 0:
             if self.search_space_path is None:
                 raise ValueError(
@@ -266,7 +273,6 @@ class NestedCrossValidator:
         device = self._resolve_device()
         log.info("Training device: %s", device)
         outer_seeds = self.cfg.resolved_outer_seeds()
-        n_outer = self.cfg.effective_n_outer_folds
         log.info(
             "Nested CV — reps=%d  outer_folds=%d  inner_trials=%d  hpo_metric=%s",
             self.cfg.n_repetitions, n_outer, self.cfg.inner_hpo_trials,

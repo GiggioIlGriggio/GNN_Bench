@@ -193,11 +193,13 @@ class TrainerConfig(BaseModel):
             raise ValueError(
                 f"n_repetitions must be >= 1, got {self.n_repetitions}"
             )
-        outer = self.effective_n_outer_folds
-        if outer < 2:
+        # ``n_folds`` is allowed to be anything (legacy CrossValidator still
+        # accepts 1) — we only constrain ``n_outer_folds`` when the user
+        # explicitly opts into the nested protocol. NestedCrossValidator
+        # enforces effective_n_outer_folds >= 2 at runtime.
+        if self.n_outer_folds is not None and self.n_outer_folds < 2:
             raise ValueError(
-                f"Effective number of outer folds must be >= 2, got {outer} "
-                f"(n_outer_folds={self.n_outer_folds}, n_folds={self.n_folds})"
+                f"n_outer_folds must be >= 2, got {self.n_outer_folds}"
             )
         if self.inner_hpo_trials < 0:
             raise ValueError(
