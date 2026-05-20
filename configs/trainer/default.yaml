@@ -14,6 +14,9 @@ scheduler_params:
 # Training loop
 epochs: 300
 gradient_clip_val: 1.0
+# Mini-batch size for DataLoaders. Train loaders use drop_last=True when
+# the pool size exceeds batch_size, so BatchNorm never sees a singleton.
+batch_size: 16
 
 # Early stopping
 early_stopping_patience: 35
