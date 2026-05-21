@@ -1,0 +1,30 @@
+# Cluster_Helper Project Manifest.
+# Single source of truth for where this project lives on the cluster.
+# See ~/.claude/skills/cluster-helper/CONTEXT.md for terminology.
+
+project_name: gnn_bench
+
+cluster:
+  host: al5165@155.105.223.17
+  project_root: /data/bdip_ssd/al5165/gnn_bench
+  container: gnn_bench.sif
+
+git:
+  remote: origin
+  branch: main
+
+slurm:
+  partition: rad2
+  qos: 16cpu
+  account: rad
+  log_dir: slurm/logs
+  # Defaults documented here for reference; each slurm/*.sh hardcodes its own
+  # SBATCH headers, so changing values here does NOT change job behaviour.
+  gpus: 1
+  cpus: 4
+  mem: 32G
+  time: "23:59:00"
+
+wandb:
+  project: orbitglm
+  entity: teampolpetta

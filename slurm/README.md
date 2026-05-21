@@ -1,6 +1,12 @@
-# SLURM Launcher — EF Neural Substrate
+# SLURM Launcher — `gnn_bench`
 
-This folder contains everything needed to submit experiment jobs to a SLURM cluster.
+This folder contains the Slurm job scripts and batch launcher that the
+`/cluster-helper` skill drives. The cluster is `al5165@155.105.223.17`; the
+deploy target is `/data/bdip_ssd/al5165/gnn_bench/`.
+
+For the skill's own design and verbs, see
+`~/.claude/skills/cluster-helper/README.md` (or the `CONTEXT.md` next to it).
+For project-side configuration, see `../.cluster-helper.yaml`.
 
 ---
 
@@ -8,175 +14,120 @@ This folder contains everything needed to submit experiment jobs to a SLURM clus
 
 ```
 slurm/
-├── config.sh               ← cluster & environment settings (edit this first)
-├── submit_job.sh           ← submit a single job
-├── run_experiments.sh      ← batch launcher (loops over parameter grids)
-├── templates/
-│   ├── train.slurm         ← standard cross-validation job template
-│   ├── sweep.slurm         ← Optuna hyperparameter sweep template
-│   └── finetune.slurm      ← fine-tuning from checkpoint template
-└── logs/                   ← stdout/stderr logs (created automatically)
+├── train.sh             ← standard 5-fold cross-validation job
+├── sweep.sh             ← Optuna hyperparameter sweep (--multirun)
+├── finetune.sh          ← fine-tuning from checkpoint
+├── run_experiments.sh   ← batch launcher (loops over parameter grids)
+└── logs/                ← stdout/stderr from Slurm (auto-populated)
 ```
+
+Each `.sh` is a flat committed bash script. SBATCH headers are hardcoded;
+the only runtime input is the `$RUN_ARGS` environment variable, which carries
+Hydra overrides.
 
 ---
 
-## Quick-start (3 steps)
+## How Hydra overrides reach the script: `$RUN_ARGS`
 
-### 1. Edit `config.sh`
-
-Set your cluster-specific paths and resources:
+`cluster-submit` forwards extra positional args to **sbatch**, not to the
+job script. So we cannot pass `dataset=orbit` as a positional arg — sbatch
+would reject it. Instead, the slurm script reads `$RUN_ARGS`, and the caller
+sets it via Slurm's `--export` mechanism:
 
 ```bash
-PROJECT_ROOT="/data/bdip_ssd/al5165/EF_neural_substrate"
-VENV_ACTIVATE="${PROJECT_ROOT}/.venv/bin/activate"
-
-PARTITION="rad2"
-QOS="16cpu"
-ACCOUNT="rad"
+cluster-submit slurm/train.sh "--export=ALL,RUN_ARGS=dataset=orbit model=gcn features=default labels=default"
 ```
 
-### 2. Submit a single job
+Inside `slurm/train.sh`, this expands to:
 
 ```bash
-# Standard training (orbit dataset, GCN model, default features & labels)
-bash slurm/submit_job.sh train orbit gcn default default
+python scripts/run_experiment.py logging.project=orbitglm logging.entity=teampolpetta \
+    dataset=orbit model=gcn features=default labels=default
+```
 
-# Fine-tuning from a pretrained checkpoint
-bash slurm/submit_job.sh finetune orbit gcn identity default \
-    from_age checkpoints
+The `ALL,` prefix tells Slurm to also forward the existing environment
+(including `WANDB_API_KEY` from `~/.bashrc` on the cluster).
+
+---
+
+## Single submit
+
+```bash
+# Standard training
+cluster-submit slurm/train.sh "--export=ALL,RUN_ARGS=dataset=orbit model=gcn features=default labels=default"
 
 # Optuna sweep
-bash slurm/submit_job.sh sweep orbit gcn default default bayesian r2
+cluster-submit slurm/sweep.sh "--export=ALL,RUN_ARGS=dataset=orbit model=gcn features=default labels=default sweeper=bayesian objective_metric=r2"
+
+# Fine-tuning from checkpoint
+cluster-submit slurm/finetune.sh "--export=ALL,RUN_ARGS=dataset=orbit model=gcn features=identity labels=default finetuning=from_age finetuning.checkpoint_path=checkpoints"
 ```
 
-### 3. Submit a batch of jobs
-
-Edit the parameter arrays in `run_experiments.sh`, then run:
+After each submit, `cluster-submit` prints `JOB_ID=...` on stdout. Tail the
+log with:
 
 ```bash
-# Preview without submitting (dry run)
-DRY_RUN=1 bash slurm/run_experiments.sh
-
-# Submit for real
-bash slurm/run_experiments.sh
+cluster-tail <jobid>
 ```
 
 ---
 
-## Reference: `submit_job.sh`
+## Batch experiments
 
-```
-bash slurm/submit_job.sh <mode> <dataset> <model> <features> <labels> \
-                         [mode-specific arg(s)] [extra_overrides...]
-```
-
-| Argument | Options |
-|---|---|
-| `mode` | `train` · `sweep` · `finetune` |
-| `dataset` | `orbit` · `pnc` |
-| `model` | `gcn` · `gat` · `gin` · `mlp` |
-| `features` | `default` · `glm_scalar` · `glm_diagonal` · `identity` |
-| `labels` | `default` · `pnc_default` · `ies_immar` |
-
-**Mode-specific extra arguments:**
-
-| Mode | 6th arg | 7th arg |
-|---|---|---|
-| `train` | finetuning cfg (`default`) | — |
-| `sweep` | sweeper cfg (`bayesian` / `gcn_embedding_dim`) | objective metric (`r2` / `val_mae`) |
-| `finetune` | finetuning cfg (`from_age`) | checkpoint path (`checkpoints`) |
-
-Any remaining arguments are passed directly as Hydra overrides, for example:
+Open `slurm/run_experiments.sh` and edit the arrays at the top:
 
 ```bash
-bash slurm/submit_job.sh train orbit gcn default default default \
-    trainer.lr=0.0005 trainer.epochs=200
-```
-
----
-
-## Modes explained
-
-### `train` — Standard 5-fold cross-validation
-
-Runs `scripts/run_experiment.py` with the selected config. Checkpoints are saved
-to `checkpoints/fold_*/` by default.
-
-```bash
-bash slurm/submit_job.sh train orbit gcn glm_scalar default
-```
-
-### `sweep` — Optuna hyperparameter search
-
-Runs with `--multirun`. The sweeper config controls the search space and number
-of trials (see `configs/sweeper/`).
-
-```bash
-bash slurm/submit_job.sh sweep orbit gcn default default bayesian r2
-```
-
-Available sweepers:
-- `bayesian` — full Bayesian sweep (50 trials)
-- `gcn_embedding_dim` — GCN architecture search (250 trials)
-
-### `finetune` — Fine-tuning from a pretrained checkpoint
-
-Loads weights from a previous training run and adapts them to a new target or
-dataset.
-
-```bash
-bash slurm/submit_job.sh finetune orbit gcn identity default \
-    from_age checkpoints
-```
-
-The `from_age` finetuning config (in `configs/finetuning/from_age.yaml`) freezes
-the backbone and fine-tunes only the prediction head.
-
----
-
-## Batch experiments — editing `run_experiments.sh`
-
-Open `run_experiments.sh` and edit the arrays at the top:
-
-```bash
-MODE="train"
-
+MODE="train"                              # train | sweep | finetune
 DATASETS=("orbit" "pnc")
 MODELS=("gcn" "gat" "gin")
 FEATURES=("default" "glm_scalar")
 LABELS=("default")
 ```
 
-Every combination is submitted as an independent SLURM job. With the example
-above that is 2 × 3 × 2 × 1 = **12 jobs**.
+Every combination is submitted as an independent Slurm job.
 
-Always do a dry run first:
+Always dry-run first:
 
 ```bash
 DRY_RUN=1 bash slurm/run_experiments.sh
+```
+
+Then submit for real:
+
+```bash
+bash slurm/run_experiments.sh
 ```
 
 ---
 
 ## Logs
 
-SLURM stdout/stderr are written to `slurm/logs/`:
-
-```
-slurm/logs/train_<jobid>.log
-slurm/logs/train_<jobid>.err
-slurm/logs/sweep_<jobid>.log
-slurm/logs/finetune_<jobid>.log
-```
-
-Check a running job:
+Slurm writes per-job logs to `slurm/logs/<jobid>.out` and `<jobid>.err` (the
+two are gitignored — only `slurm/logs/.gitkeep` is tracked).
 
 ```bash
-tail -f slurm/logs/train_<jobid>.log
+cluster-tail <jobid>           # follow stdout
+cluster-tail <jobid> --err     # follow stderr
+cluster-status                 # squeue for this user
 ```
 
-Check queue:
+Pull a file back from the cluster to `./cluster_outputs/`:
 
 ```bash
-squeue -u $USER
+cluster-fetch outputs/run42/checkpoint.pt
 ```
+
+---
+
+## Container
+
+The Singularity image is built locally from `Dockerfile` and rsynced to the
+cluster as `${PROJECT_ROOT}/gnn_bench.sif`. Rebuild only when `Dockerfile` or
+`requirements.txt` changes:
+
+```bash
+cluster-push-container
+```
+
+The `.sif` is gitignored — git carries the recipe (`Dockerfile`), not the
+image.

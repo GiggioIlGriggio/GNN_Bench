@@ -46,4 +46,9 @@ dist/
 
 # --- Logs ---
 *.log
-logs/
+/logs/
+
+# --- cluster-helper artifacts ---
+cluster_outputs/
+slurm/logs/*
+!slurm/logs/.gitkeep
