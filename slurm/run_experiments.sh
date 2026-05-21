@@ -1,87 +1,82 @@
 #!/bin/bash
 # =============================================================================
-# run_experiments.sh — Batch launcher for EF Neural Substrate experiments.
+# run_experiments.sh — Batch launcher for cluster-helper-driven experiments.
 #
-# Edit the parameter arrays below to define which combinations to run,
-# then execute this script. Each combination is submitted as a separate job.
-#
-# Usage:
+# Edit the parameter arrays below, then run:
 #   bash slurm/run_experiments.sh
-#
-# Tip: dry-run first to preview submissions without actually submitting:
+# Or preview without submitting:
 #   DRY_RUN=1 bash slurm/run_experiments.sh
+#
+# Internally, each combination becomes:
+#   cluster-submit slurm/<MODE>.sh "--export=ALL,RUN_ARGS=dataset=... model=... ..."
+# Hydra overrides arrive in the job script via the $RUN_ARGS env var.
 # =============================================================================
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SUBMIT="${SCRIPT_DIR}/submit_job.sh"
-
-DRY_RUN="${DRY_RUN:-0}"   # set DRY_RUN=1 to preview without submitting
+DRY_RUN="${DRY_RUN:-0}"
 
 # ===========================================================================
 # ▶ CONFIGURE YOUR EXPERIMENT GRID HERE
 # ===========================================================================
 
-# --- Mode: train | sweep | finetune ---
-MODE="train"
+MODE="train"                              # train | sweep | finetune
 
-# --- Parameter arrays (all combinations will be submitted) ---
 DATASETS=("orbit")                        # orbit | pnc
-MODELS=("gcn" "gat")                     # gcn | gat | gin | mlp
-FEATURES=("default")                     # default | glm_scalar | glm_diagonal | identity
-LABELS=("default")                       # default | pnc_default | ies_immar
+MODELS=("gcn" "gat")                      # gcn | gat | gin | mlp
+FEATURES=("default")                      # default | glm_scalar | glm_diagonal | identity
+LABELS=("default")                        # default | pnc_default | ies_immar
 
-# --- Mode-specific settings ---
-# For MODE=train: finetuning config to use (usually "default" = disabled)
-FINETUNING_CFG="default"
+# Mode-specific extras
+FINETUNING_CFG="default"                  # for MODE=train (usually "default" = disabled) or MODE=finetune
+SWEEPER_CFG="bayesian"                    # for MODE=sweep
+OBJECTIVE_METRIC="r2"                     # for MODE=sweep
+CHECKPOINT_PATH="checkpoints"             # for MODE=finetune
 
-# For MODE=sweep:
-SWEEPER_CFG="bayesian"                   # bayesian | gcn_embedding_dim
-OBJECTIVE_METRIC="r2"                    # r2 | val_mae
-
-# For MODE=finetune:
-FINETUNE_CFG="from_age"                  # finetuning yaml name
-CHECKPOINT_PATH="checkpoints"            # path to pretrained checkpoints dir
-
-# --- Optional extra Hydra overrides (space-separated, or empty) ---
-# Example: EXTRA_OVERRIDES="trainer.lr=0.001 trainer.epochs=200"
-EXTRA_OVERRIDES=""
+EXTRA_OVERRIDES=""                        # space-separated, e.g. "trainer.lr=0.001 trainer.epochs=50"
 
 # ===========================================================================
 
-mkdir -p "${SCRIPT_DIR}/logs"
-COUNT=0
+SCRIPT="slurm/${MODE}.sh"
+[[ -f "$SCRIPT" ]] || { echo "ERROR: $SCRIPT does not exist (MODE=$MODE)" >&2; exit 1; }
 
-echo "Mode: ${MODE}"
-echo "Starting job submissions..."
+COUNT=0
+echo "Mode: ${MODE}    DRY_RUN=${DRY_RUN}"
 echo "-----------------------------------------------------------"
 
-for dataset in "${DATASETS[@]}"; do
-  for model in "${MODELS[@]}"; do
-    for features in "${FEATURES[@]}"; do
-      for labels in "${LABELS[@]}"; do
+for d in "${DATASETS[@]}"; do
+  for m in "${MODELS[@]}"; do
+    for f in "${FEATURES[@]}"; do
+      for l in "${LABELS[@]}"; do
 
+        # Compose Hydra overrides (space-separated; one --export arg).
+        OVERRIDES="dataset=${d} model=${m} features=${f} labels=${l}"
         case "${MODE}" in
           train)
-            SUBMIT_ARGS=("${MODE}" "${dataset}" "${model}" "${features}" "${labels}" "${FINETUNING_CFG}" ${EXTRA_OVERRIDES})
+            OVERRIDES="${OVERRIDES} finetuning=${FINETUNING_CFG}"
             ;;
           sweep)
-            SUBMIT_ARGS=("${MODE}" "${dataset}" "${model}" "${features}" "${labels}" "${SWEEPER_CFG}" "${OBJECTIVE_METRIC}" ${EXTRA_OVERRIDES})
+            OVERRIDES="${OVERRIDES} sweeper=${SWEEPER_CFG} objective_metric=${OBJECTIVE_METRIC}"
             ;;
           finetune)
-            SUBMIT_ARGS=("${MODE}" "${dataset}" "${model}" "${features}" "${labels}" "${FINETUNE_CFG}" "${CHECKPOINT_PATH}" ${EXTRA_OVERRIDES})
+            OVERRIDES="${OVERRIDES} finetuning=${FINETUNING_CFG} finetuning.checkpoint_path=${CHECKPOINT_PATH}"
             ;;
           *)
-            echo "ERROR: Unknown mode '${MODE}'"
+            echo "ERROR: Unknown MODE '${MODE}' (expected train|sweep|finetune)" >&2
             exit 1
             ;;
         esac
+        if [[ -n "${EXTRA_OVERRIDES}" ]]; then
+          OVERRIDES="${OVERRIDES} ${EXTRA_OVERRIDES}"
+        fi
+
+        EXPORT_ARG="--export=ALL,RUN_ARGS=${OVERRIDES}"
 
         if [[ "${DRY_RUN}" == "1" ]]; then
-          echo "[DRY-RUN] bash ${SUBMIT} ${SUBMIT_ARGS[*]}"
+          printf '[DRY-RUN] cluster-submit %s %q\n' "$SCRIPT" "$EXPORT_ARG"
         else
-          bash "${SUBMIT}" "${SUBMIT_ARGS[@]}"
-          sleep 1   # brief pause to avoid scheduler overload
+          echo "[submit] $SCRIPT  $EXPORT_ARG"
+          cluster-submit "$SCRIPT" "$EXPORT_ARG"
+          sleep 1
         fi
 
         COUNT=$((COUNT + 1))
