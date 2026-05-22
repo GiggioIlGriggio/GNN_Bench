@@ -61,7 +61,7 @@ class _FakeTrainer:
     def __init__(self) -> None:
         self.logger = MagicMock()
 
-    def fit(self, model, train_loader, val_loader, label_normalizer, fold_idx, on_epoch_end_callback=None):
+    def fit(self, model, train_loader, val_loader, inverse_transform, fold_idx, on_epoch_end_callback=None):
         with torch.no_grad():
             model.value.fill_(9.0)
         return TrainResult(
@@ -73,13 +73,13 @@ class _FakeTrainer:
             last_val_metrics={"mae": 9.0, "rmse": 9.0, "r2": 0.0, "pearson_r": 0.0},
         )
 
-    def predict(self, model, loader, label_normalizer):
+    def predict(self, model, loader, inverse_transform):
         y_true = np.array([float(graph.y.item()) for graph in loader.dataset], dtype=np.float32)
         y_pred = np.full_like(y_true, float(model.value.detach().cpu().item()))
         return y_true, y_pred
 
-    def evaluate(self, model, loader, label_normalizer, split):
-        y_true, y_pred = self.predict(model, loader, label_normalizer)
+    def evaluate(self, model, loader, inverse_transform, split):
+        y_true, y_pred = self.predict(model, loader, inverse_transform)
         return compute_metrics(y_true, y_pred)
 
 
@@ -137,7 +137,7 @@ def test_trainer_passes_epoch_to_fold_metric_logs(monkeypatch: pytest.MonkeyPatc
         model=model,
         train_loader=[batch],
         val_loader=[batch],
-        label_normalizer=normalizer,
+        inverse_transform=normalizer.inverse_transform,
         fold_idx=0,
     )
 
