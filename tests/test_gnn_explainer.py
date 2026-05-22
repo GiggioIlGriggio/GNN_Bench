@@ -80,7 +80,7 @@ def _make_model_cfg(feat_dim: int = 3) -> ModelConfig:
 
 
 def _make_feature_cfg_dict(feat_dim: int = 3) -> dict:
-    """Minimal FeatureConfig payload accepted by CheckpointManager.load_model_for_fold."""
+    """Minimal FeatureConfig payload accepted by FoldCheckpoint.load_model."""
     return {
         "node_features": ["random"],
         "edge_features": ["weight"],
