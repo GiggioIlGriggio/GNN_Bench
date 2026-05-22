@@ -104,7 +104,7 @@ class Finetuner:
         Used to match pretrained weights to the current CV fold so that
         the backbone never sees the fold's test subjects during pretraining.
         """
-        from src.training.checkpoint_manager import CheckpointManager
+        from src.training.fold_checkpoint import CheckpointManager
         ckpt = CheckpointManager(checkpoint_path).load_fold_checkpoint(fold_idx)
         variant = self.cfg.checkpoint_variant
         state_dict = (
@@ -389,7 +389,7 @@ class Finetuner:
         Dict[int, CVResult]
             Mapping from pretrain-epoch index to the full ``CVResult``.
         """
-        from src.training.checkpoint_manager import CheckpointManager
+        from src.training.fold_checkpoint import CheckpointManager
         from src.training.cross_validation import CrossValidator
         from src.training.trainer import Trainer
 

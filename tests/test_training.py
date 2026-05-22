@@ -19,7 +19,7 @@ from src.training.metrics import (
     aggregate_fold_metrics,
     compute_metrics,
 )
-from src.training.checkpoint_manager import CheckpointManager, FoldCheckpoint
+from src.training.fold_checkpoint import CheckpointManager, FoldBundle
 
 
 # ---------------------------------------------------------------------------

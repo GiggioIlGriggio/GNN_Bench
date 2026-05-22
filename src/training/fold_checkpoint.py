@@ -24,8 +24,12 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class FoldCheckpoint:
-    """Contents of a saved fold checkpoint.
+class FoldBundle:
+    """Snapshot of one fold's persisted artifacts, loaded together.
+
+    Returned by ``FoldCheckpoint.load_bundle()``. Use the typed
+    accessors on :class:`FoldCheckpoint` when you only need part of
+    the bundle (model weights, the barrier, metrics).
 
     Attributes
     ----------
@@ -35,8 +39,9 @@ class FoldCheckpoint:
         PyTorch model state dict from the best epoch.
     last_model_state_dict : dict
         PyTorch model state dict from the final epoch.
-    barrier : FoldBarrier
-        Outer-train-fit leakage barrier (ADR-0009).
+    barrier : Optional[FoldBarrier]
+        Outer-train-fit leakage barrier (ADR-0009); ``None`` when
+        ``barrier.pt`` is absent.
     best_metrics : MetricDict
         Validation metrics at the best epoch.
     best_epoch : int
@@ -140,7 +145,7 @@ class CheckpointManager:
 
         return fold_dir
 
-    def load_fold_checkpoint(self, fold_idx: int) -> FoldCheckpoint:
+    def load_fold_checkpoint(self, fold_idx: int) -> "FoldBundle":
         """Load a fold's checkpoint from disk.
 
         Parameters
@@ -149,7 +154,7 @@ class CheckpointManager:
 
         Returns
         -------
-        FoldCheckpoint
+        FoldBundle
 
         Raises
         ------
@@ -181,7 +186,7 @@ class CheckpointManager:
         with open(fold_dir / "metrics.json") as f:
             metrics_data = json.load(f)
 
-        return FoldCheckpoint(
+        return FoldBundle(
             fold_idx=fold_idx,
             best_model_state_dict=best_state_dict,
             last_model_state_dict=last_state_dict,

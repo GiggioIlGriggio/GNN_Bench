@@ -220,7 +220,7 @@ class GNNExplainerRunner:
 
         For every fold the model is reconstructed from the checkpoint's saved
         ``model_config.json`` / ``feature_config.json`` (written by
-        :class:`~src.training.checkpoint_manager.CheckpointManager`).
+        :class:`~src.training.fold_checkpoint.CheckpointManager`).
         *model_factory* is used as a fallback only when those files are
         absent.
 
@@ -519,7 +519,7 @@ class GNNExplainerRunner:
         from torch_geometric.explain import Explainer, GNNExplainer
         from torch_geometric.explain.config import ModelConfig as ExplainerModelConfig
 
-        from src.training.checkpoint_manager import CheckpointManager
+        from src.training.fold_checkpoint import CheckpointManager
         from src.training.glm_normalizer import GLMFeatureNormalizer
 
         ckpt_path = fold_ckpt_dir / "model_best.pt"
