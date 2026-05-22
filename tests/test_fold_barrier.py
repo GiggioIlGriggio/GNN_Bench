@@ -33,3 +33,40 @@ class TestLabelNormalizerStateDict:
         np.testing.assert_allclose(
             n2.inverse_transform(n2.transform(y)), y, atol=1e-6
         )
+
+
+class TestGLMNormalizerStateDict:
+    """state_dict carries (mean, std, columns) and survives a roundtrip."""
+
+    def _make_graphs(self, n: int = 8, n_rois: int = 6, seed: int = 0):
+        rng = np.random.default_rng(seed)
+        graphs = []
+        for _ in range(n):
+            x = torch.tensor(
+                rng.normal(size=(n_rois, 4)), dtype=torch.float32,
+            )
+            g = Data(
+                x=x,
+                edge_index=torch.zeros((2, 0), dtype=torch.long),
+                num_nodes=n_rois,
+            )
+            graphs.append(g)
+        return graphs
+
+    def test_roundtrip(self) -> None:
+        from src.training.glm_normalizer import GLMFeatureNormalizer
+
+        graphs = self._make_graphs(n=12, n_rois=5)
+        n1 = GLMFeatureNormalizer(col_start=1, col_end=3)
+        n1.fit(graphs)
+
+        state = n1.state_dict()
+        assert state["col_start"] == 1
+        assert state["col_end"] == 3
+        assert state["fitted"] is True
+
+        n2 = GLMFeatureNormalizer(col_start=0, col_end=0)  # placeholders
+        n2.load_state_dict(state)
+        assert n2.col_start == 1 and n2.col_end == 3
+        assert torch.allclose(n2.mean_, n1.mean_)
+        assert torch.allclose(n2.std_, n1.std_)
