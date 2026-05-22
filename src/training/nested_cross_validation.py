@@ -19,13 +19,13 @@ in-process Optuna study picks HPs for that fold, then the model is
 epochs and that refit checkpoint is the only one evaluated on outer-test.
 
 All per-fold leakage protections from the legacy CrossValidator are
-preserved (LabelBuilder / LabelNormalizer / GLMFeatureNormalizer are
-fit on outer-Train pool only — never on the test fold).
+preserved behind a single ``FoldBarrier`` (ADR-0009): one barrier is
+fit on each outer-Train pool and applied uniformly to inner-train,
+inner-val, and outer-test — never the other way round.
 """
 
 from __future__ import annotations
 
-import copy
 import csv
 import json
 import logging
@@ -45,8 +45,7 @@ from src.configs.model_config import ModelConfig
 from src.configs.trainer_config import TrainerConfig
 from src.datasets.label_builder import LabelBuilder
 from src.training.checkpoint_manager import CheckpointManager
-from src.training.glm_normalizer import GLMFeatureNormalizer
-from src.training.label_normalizer import LabelNormalizer
+from src.training.fold_barrier import FoldBarrier
 from src.training.metrics import MetricDict, compute_metrics
 from src.training.search_space import (
     SearchSpec,
@@ -379,7 +378,7 @@ class NestedCrossValidator:
         # ------------------------------------------------------------------
         # Build inner data (with leakage protections fit on inner-train only).
         # ------------------------------------------------------------------
-        inner_loaders, inner_normalizer = self._make_split_loaders(
+        inner_loaders, inner_barrier = self._make_split_loaders(
             dataset=dataset,
             labels=labels,
             train_idx=train_idx,
@@ -403,7 +402,7 @@ class NestedCrossValidator:
                 base_model_cfg=base_model_cfg,
                 model_factory=model_factory,
                 inner_loaders=inner_loaders,
-                inner_normalizer=inner_normalizer,
+                inner_barrier=inner_barrier,
                 logger=logger,
                 device=device,
             )
@@ -419,7 +418,7 @@ class NestedCrossValidator:
                 trial_trainer_cfg=self._trainer_cfg_for_inner(),
                 model_factory=model_factory,
                 inner_loaders=inner_loaders,
-                inner_normalizer=inner_normalizer,
+                inner_barrier=inner_barrier,
                 logger=logger,
                 device=device,
             )[0]
@@ -428,7 +427,7 @@ class NestedCrossValidator:
         # Refit-on-TrainVal (when HPO ran) or reuse the best inner checkpoint
         # (fast preset). Either way, evaluate on outer test.
         # ------------------------------------------------------------------
-        outer_loaders, outer_normalizer = self._make_split_loaders(
+        outer_loaders, outer_barrier = self._make_split_loaders(
             dataset=dataset,
             labels=labels,
             train_idx=train_val_idx,  # full outer-TrainVal pool
@@ -473,7 +472,7 @@ class NestedCrossValidator:
         # Outer-test evaluation
         eval_trainer = Trainer(cfg=trial_trainer_cfg, logger=logger)
         y_true, y_pred = eval_trainer.predict(
-            model, outer_loaders["test"], outer_normalizer,
+            model, outer_loaders["test"], outer_barrier.inverse_transform_labels,
         )
         outer_metrics = compute_metrics(y_true, y_pred)
 
@@ -499,7 +498,7 @@ class NestedCrossValidator:
             fold_idx=fold,
             best_model_state_dict=model.state_dict(),
             last_model_state_dict=model.state_dict(),
-            label_normalizer=outer_normalizer,
+            barrier=outer_barrier,
             best_metrics=outer_metrics,
             best_epoch=refit_epochs - 1,
             last_metrics=outer_metrics,
@@ -546,7 +545,7 @@ class NestedCrossValidator:
         base_model_cfg: ModelConfig,
         model_factory: Callable[[ModelConfig], "BrainGNN"],
         inner_loaders: Dict[str, DataLoader],
-        inner_normalizer: LabelNormalizer,
+        inner_barrier: FoldBarrier,
         logger: "WandbLogger",
         device: torch.device,
     ) -> Tuple[Dict[str, Any], int, int, List[Dict[str, Any]]]:
@@ -585,7 +584,7 @@ class NestedCrossValidator:
                 trial_trainer_cfg=trial_trainer_cfg,
                 model_factory=model_factory,
                 inner_loaders=inner_loaders,
-                inner_normalizer=inner_normalizer,
+                inner_barrier=inner_barrier,
                 logger=logger,
                 device=device,
             )
@@ -629,7 +628,7 @@ class NestedCrossValidator:
         trial_trainer_cfg: TrainerConfig,
         model_factory: Callable[[ModelConfig], "BrainGNN"],
         inner_loaders: Dict[str, DataLoader],
-        inner_normalizer: LabelNormalizer,
+        inner_barrier: FoldBarrier,
         logger: "WandbLogger",
         device: torch.device,
     ) -> Tuple[int, float]:
@@ -646,7 +645,7 @@ class NestedCrossValidator:
             model,
             inner_loaders["train"],
             inner_loaders["val"],
-            inner_normalizer,
+            inner_barrier.inverse_transform_labels,
             fold_idx=fold,
             on_epoch_end_callback=None,
         )
@@ -711,57 +710,62 @@ class NestedCrossValidator:
         label_components: Optional[pd.DataFrame],
         glm_col_range: Optional[Tuple[int, int]],
         glm_normalize: bool,
-    ) -> Tuple[Dict[str, DataLoader], LabelNormalizer]:
-        """Build train/val/test DataLoaders with normaliser fit on train only.
+    ) -> Tuple[Dict[str, DataLoader], FoldBarrier]:
+        """Build train/val/test DataLoaders behind a FoldBarrier (ADR-0009).
 
-        Set ``val_idx=[]`` for the outer refit phase — the returned dict will
-        omit the ``"val"`` key.
+        Set ``val_idx=[]`` for the outer refit phase — the returned dict
+        omits the ``"val"`` key.
         """
+        barrier = FoldBarrier(
+            label_norm_strategy=self.cfg.label_norm_strategy,
+            glm_col_range=glm_col_range,
+            glm_normalize=glm_normalize,
+            label_builder=label_builder,
+        )
+
+        train_graphs_raw = [dataset[i] for i in train_idx]
         if label_builder is not None and label_components is not None:
-            y_train = label_builder.fit_transform(label_components.iloc[train_idx])
-            y_test = label_builder.transform(label_components.iloc[test_idx])
-            y_val = (
-                label_builder.transform(label_components.iloc[val_idx])
+            barrier.fit(train_graphs_raw, label_components.iloc[train_idx])
+            y_train_norm = barrier.transform_labels(label_components.iloc[train_idx])
+            y_test_norm = barrier.transform_labels(label_components.iloc[test_idx])
+            y_val_norm = (
+                barrier.transform_labels(label_components.iloc[val_idx])
                 if val_idx else np.zeros(0)
             )
         else:
-            y_train = labels[train_idx]
-            y_test = labels[test_idx]
-            y_val = labels[val_idx] if val_idx else np.zeros(0)
+            barrier.fit(train_graphs_raw, labels[train_idx])
+            y_train_norm = barrier.transform_labels(labels[train_idx])
+            y_test_norm = barrier.transform_labels(labels[test_idx])
+            y_val_norm = (
+                barrier.transform_labels(labels[val_idx])
+                if val_idx else np.zeros(0)
+            )
 
-        normalizer = LabelNormalizer(strategy=self.cfg.label_norm_strategy)
-        y_train_norm = normalizer.fit_transform(y_train)
-        y_test_norm = normalizer.transform(y_test)
-        y_val_norm = normalizer.transform(y_val) if val_idx else np.zeros(0)
+        train_graphs = barrier.transform_graphs(train_graphs_raw)
+        test_graphs = barrier.transform_graphs([dataset[i] for i in test_idx])
+        val_graphs = (
+            barrier.transform_graphs([dataset[i] for i in val_idx])
+            if val_idx else []
+        )
 
         bs = self.cfg.batch_size
         loaders: Dict[str, DataLoader] = {
-            "train": _make_loader(
-                dataset, train_idx, y_train_norm, shuffle=True,
+            "train": _make_loader_from_graphs(
+                train_graphs, y_train_norm, shuffle=True,
                 batch_size=bs, drop_last=len(train_idx) > bs,
             ),
-            "test": _make_loader(
-                dataset, test_idx, y_test_norm, shuffle=False,
+            "test": _make_loader_from_graphs(
+                test_graphs, y_test_norm, shuffle=False,
                 batch_size=bs, drop_last=False,
             ),
         }
         if val_idx:
-            loaders["val"] = _make_loader(
-                dataset, val_idx, y_val_norm, shuffle=False,
+            loaders["val"] = _make_loader_from_graphs(
+                val_graphs, y_val_norm, shuffle=False,
                 batch_size=bs, drop_last=False,
             )
 
-        if glm_col_range is not None and glm_normalize:
-            col_start, col_end = glm_col_range
-            glm_norm = GLMFeatureNormalizer(col_start, col_end)
-            train_graphs = list(loaders["train"].dataset)
-            glm_norm.fit(train_graphs)
-            glm_norm.transform(train_graphs)
-            glm_norm.transform(list(loaders["test"].dataset))
-            if "val" in loaders:
-                glm_norm.transform(list(loaders["val"].dataset))
-
-        return loaders, normalizer
+        return loaders, barrier
 
     # ------------------------------------------------------------------
     # Misc helpers
@@ -788,20 +792,21 @@ class NestedCrossValidator:
 # ---------------------------------------------------------------------------
 
 
-def _make_loader(
-    dataset: List[torch_geometric.data.Data],
-    indices: List[int],
+def _make_loader_from_graphs(
+    graphs: List[torch_geometric.data.Data],
     y_values: np.ndarray,
     *,
     shuffle: bool,
     batch_size: int,
     drop_last: bool = False,
 ) -> DataLoader:
-    graphs = []
-    for i, idx in enumerate(indices):
-        g = copy.copy(dataset[idx])
+    """Wrap pre-transformed graphs in a PyG DataLoader, attaching labels.
+
+    The graphs must have been produced by ``FoldBarrier.transform_graphs``
+    (or otherwise be safe to mutate in ``.y``).
+    """
+    for i, g in enumerate(graphs):
         g.y = torch.tensor([y_values[i]], dtype=torch.float32)
-        graphs.append(g)
     return DataLoader(
         graphs, batch_size=batch_size, shuffle=shuffle, drop_last=drop_last,
     )
