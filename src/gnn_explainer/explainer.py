@@ -519,8 +519,7 @@ class GNNExplainerRunner:
         from torch_geometric.explain import Explainer, GNNExplainer
         from torch_geometric.explain.config import ModelConfig as ExplainerModelConfig
 
-        from src.training.fold_checkpoint import CheckpointManager
-        from src.training.glm_normalizer import GLMFeatureNormalizer
+        from src.training.fold_checkpoint import FoldCheckpoint
 
         ckpt_path = fold_ckpt_dir / "model_best.pt"
         if not ckpt_path.exists():
@@ -531,26 +530,36 @@ class GNNExplainerRunner:
             return None
 
         num_nodes = dataset[0].num_nodes if dataset else 0
-        model, _ = CheckpointManager(fold_ckpt_root).load_model_for_fold(
-            fold_idx, model_factory, num_nodes, variant="best",
+        fc = FoldCheckpoint(fold_ckpt_dir)
+        model = fc.load_model(
+            model_factory=model_factory, num_nodes=num_nodes, variant="best",
         )
         model.eval()
         model.to(device)
         log.debug("Loaded model weights from %s", ckpt_path)
 
-        test_graphs = [copy.copy(dataset[i]) for i in test_idx]
-
-        if glm_col_range is not None and glm_normalize:
-            col_start, col_end = glm_col_range
-            glm_norm = GLMFeatureNormalizer(col_start, col_end)
-            train_graphs_for_norm = [copy.copy(dataset[i]) for i in train_idx]
-            glm_norm.fit(train_graphs_for_norm)
-            glm_norm.transform(test_graphs)
-            log.debug(
-                "%s: GLM features (cols [%d:%d)) z-scored on %d train "
-                "subjects and applied to %d test subjects.",
-                fold_log_tag, col_start, col_end, len(train_idx), len(test_idx),
+        # ADR-0009 / PR2: the persisted FoldBarrier owns the GLM
+        # statistics (and any other per-fold leakage state) fit on the
+        # outer-train pool. The previous re-fit-from-train-indices branch
+        # is gone — explanation reproducibility now decouples from
+        # upstream split derivation.
+        barrier = fc.load_barrier()
+        if barrier is not None:
+            test_graphs = barrier.transform_graphs(
+                [dataset[i] for i in test_idx]
             )
+            log.debug(
+                "%s: barrier.pt loaded from %s; %d test subjects transformed.",
+                fold_log_tag, fc.fold_dir, len(test_idx),
+            )
+        else:
+            log.warning(
+                "%s: barrier.pt not present in %s — falling back to raw "
+                "test graphs. GLM-normalised checkpoints predating "
+                "ADR-0009 / PR1 are not supported; re-run training.",
+                fold_log_tag, fc.fold_dir,
+            )
+            test_graphs = [copy.copy(dataset[i]) for i in test_idx]
 
         wrapped_model = _DataWrapper(model)
         explainer = Explainer(
