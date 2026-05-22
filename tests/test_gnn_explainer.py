@@ -109,13 +109,16 @@ def _write_fold_artifacts(
     model: torch.nn.Module,
     model_cfg: ModelConfig,
     feature_cfg: dict,
+    *,
+    barrier=None,
 ) -> None:
-    """Write the on-disk files CheckpointManager.load_model_for_fold expects.
+    """Write the on-disk files FoldCheckpoint expects to load.
 
-    The Explainer's GLM re-fit branch (current PR1 state) does not consume
-    a persisted leakage barrier, so ``barrier.pt`` is not synthesised
-    here — ``load_model_for_fold`` returns ``barrier=None`` and the
-    explainer test path tolerates it.
+    Post-PR2 (ADR-0009) the explainer reloads the fold barrier from
+    ``barrier.pt`` instead of re-fitting on recovered train indices.
+    Tests that want to exercise that reload path pass a fitted
+    ``FoldBarrier`` here; tests that exercise the warn-and-fall-back
+    path leave it as ``None``.
     """
     fold_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), fold_dir / "model_best.pt")
@@ -132,12 +135,39 @@ def _write_fold_artifacts(
             },
             f,
         )
+    if barrier is not None:
+        barrier.save(fold_dir / "barrier.pt")
+
+
+def _fit_synthetic_barrier(
+    graphs: List,
+    labels: np.ndarray,
+    *,
+    glm_col_range=None,
+):
+    """Fit a FoldBarrier on the whole synthetic dataset.
+
+    The tests don't care about leakage-correctness of the synthesised
+    barrier — they only need a valid persisted artefact that the
+    explainer can reload. Fitting on the full dataset keeps the
+    helpers stateless (they don't need train indices).
+    """
+    from src.training.fold_barrier import FoldBarrier
+
+    barrier = FoldBarrier(
+        label_norm_strategy="standard",
+        glm_col_range=glm_col_range,
+        glm_normalize=glm_col_range is not None,
+    )
+    barrier.fit(graphs, labels)
+    return barrier
 
 
 def _build_nested_checkpoint_tree(
     ckpt_root: Path,
     labels: np.ndarray,
     *,
+    graphs: List,
     n_repetitions: int,
     n_outer_folds: int,
     stratify_bins: int = 4,
@@ -164,7 +194,8 @@ def _build_nested_checkpoint_tree(
         ):
             fold_dir = ckpt_root / f"rep_{rep}" / f"fold_{fold_idx}"
             _write_fold_artifacts(
-                fold_dir, factory(), model_cfg, feature_cfg
+                fold_dir, factory(), model_cfg, feature_cfg,
+                barrier=_fit_synthetic_barrier(graphs, labels),
             )
 
     nested_payload = {
@@ -187,6 +218,8 @@ def _build_nested_checkpoint_tree(
 def _build_legacy_checkpoint_tree(
     ckpt_root: Path,
     *,
+    graphs: List,
+    labels: np.ndarray,
     n_folds: int,
     feat_dim: int = 3,
     num_nodes: int = 6,
@@ -199,7 +232,8 @@ def _build_legacy_checkpoint_tree(
     for fold_idx in range(n_folds):
         fold_dir = ckpt_root / f"fold_{fold_idx}"
         _write_fold_artifacts(
-            fold_dir, factory(), model_cfg, feature_cfg
+            fold_dir, factory(), model_cfg, feature_cfg,
+            barrier=_fit_synthetic_barrier(graphs, labels),
         )
 
 
@@ -238,6 +272,7 @@ class TestNestedCheckpointLayout:
         _build_nested_checkpoint_tree(
             ckpt_root,
             labels,
+            graphs=graphs,
             n_repetitions=2,
             n_outer_folds=3,
             stratify_bins=4,
@@ -284,6 +319,7 @@ class TestNestedAggregation:
         _build_nested_checkpoint_tree(
             ckpt_root,
             labels,
+            graphs=graphs,
             n_repetitions=2,
             n_outer_folds=3,
             stratify_bins=4,
@@ -339,6 +375,7 @@ class TestRepRestriction:
         _build_nested_checkpoint_tree(
             ckpt_root,
             labels,
+            graphs=graphs,
             n_repetitions=3,
             n_outer_folds=2,
             stratify_bins=4,
@@ -381,7 +418,7 @@ class TestLegacyLayoutFallback:
         ckpt_root = tmp_path / "ckpt"
         ckpt_root.mkdir()
         _build_legacy_checkpoint_tree(
-            ckpt_root, n_folds=3, num_nodes=6,
+            ckpt_root, graphs=graphs, labels=labels, n_folds=3, num_nodes=6,
         )
 
         # Legacy CrossValidator needs n_folds set; nested fields stay at default.
@@ -412,3 +449,114 @@ class TestLegacyLayoutFallback:
             assert (output_dir / f"fold_{fold}" / "importance_matrix.npy").exists()
         assert not (output_dir / "rep_0").exists()
         assert not (output_dir / "aggregate").exists()
+
+
+# ---------------------------------------------------------------------------
+# PR2 regression — explainer uses persisted barrier, not a re-fit
+# ---------------------------------------------------------------------------
+
+
+class TestExplainerConsumesPersistedBarrier:
+    """The Explainer must read GLM stats from ``barrier.pt`` (ADR-0009 / PR2).
+
+    Forcing the persisted barrier to carry unrealistic GLM mean/std
+    means any code path that re-fits from train indices would produce
+    different transformed test features — so this is a direct
+    regression on PR1's dead-letter (barrier written but not consumed).
+    """
+
+    def test_explainer_uses_persisted_glm_stats(self, tmp_path: Path) -> None:
+        from src.training.fold_barrier import FoldBarrier
+
+        graphs, labels = _make_synthetic_dataset(
+            n_subjects=24, n_rois=6, feat_dim=3, seed=4,
+        )
+
+        # Build a barrier with GLM range covering all 3 feature columns,
+        # fit on the real synthetic features, then override its stats
+        # with extreme values. If the explainer falls back to re-fitting,
+        # the test graphs' x will NOT show the override.
+        barrier = FoldBarrier(
+            label_norm_strategy="standard", glm_col_range=(0, 3),
+        )
+        barrier.fit(graphs, labels)
+        # Sentinel stats: mean 100, std 0.5 — far from the true ~N(0,1).
+        n_rois = graphs[0].x.shape[0]
+        barrier._glm.mean_ = torch.full((n_rois, 3), 100.0)
+        barrier._glm.std_ = torch.full((n_rois, 3), 0.5)
+
+        ckpt_root = tmp_path / "ckpt"
+        ckpt_root.mkdir()
+        model_cfg = _make_model_cfg(feat_dim=3)
+        feature_cfg = _make_feature_cfg_dict(feat_dim=3)
+        factory = _model_factory(feat_dim=3, num_nodes=6)
+        # The legacy CrossValidator path needs n_folds >= 2 (sklearn KFold).
+        # Write the SAME sentinel barrier into every fold dir so whichever
+        # fold the monkey-patch fires on, the assertion is meaningful.
+        for fold_idx in range(2):
+            _write_fold_artifacts(
+                ckpt_root / f"fold_{fold_idx}", factory(),
+                model_cfg, feature_cfg, barrier=barrier,
+            )
+
+        trainer_cfg = TrainerConfig(
+            epochs=1,
+            early_stopping_patience=1,
+            n_folds=2,
+            inner_hpo_trials=0,
+            hpo_metric="val_mae",
+            checkpoint_dir=str(ckpt_root),
+            stratify_bins=2,
+            device="cpu",
+            seed=11,
+        )
+        explainer_cfg = ExplainerConfig(
+            enabled=True, epochs=1, edge_size=0.1, save_subject_masks=False,
+        )
+
+        # Intercept FoldBarrier.transform_graphs so we capture the test
+        # graphs *immediately after* the GLM transform — before the PyG
+        # explainer mutates the model's input with its mask optimisation.
+        # This isolates the regression assertion from any model-side
+        # quirks (extreme inputs could otherwise NaN the conv layers).
+        from src.training import fold_barrier as fb_module
+        captured: dict = {}
+        original_transform = fb_module.FoldBarrier.transform_graphs
+
+        def _capture(self, graphs):  # type: ignore[no-redef]
+            out = original_transform(self, graphs)
+            captured.setdefault(
+                "x_list", [g.x.detach().clone() for g in out],
+            )
+            return out
+
+        fb_module.FoldBarrier.transform_graphs = _capture
+        try:
+            runner = GNNExplainerRunner(cfg=explainer_cfg)
+            runner.run(
+                dataset=graphs,
+                labels=labels,
+                model_factory=factory,
+                trainer_cfg=trainer_cfg,
+                glm_col_range=(0, 3),
+                glm_normalize=True,
+            )
+        finally:
+            fb_module.FoldBarrier.transform_graphs = original_transform
+
+        assert "x_list" in captured, (
+            "FoldBarrier.transform_graphs was never called — the explainer "
+            "did not consume the persisted barrier."
+        )
+        first_x = captured["x_list"][0]
+        # The transformed x must reflect the sentinel:
+        #   (raw ~N(0,1) - 100) / 0.5  →  values around -200
+        # If the explainer re-fit GLM stats on the synthetic data, values
+        # would be around N(0, 1) — not large negatives.
+        assert first_x.min().item() < -50.0, (
+            "Explainer appears to have re-fit GLM stats — the persisted "
+            "barrier.pt sentinel (mean=100, std=0.5) did not survive to "
+            "the transformed test graphs. Got min={:.3f}".format(
+                first_x.min().item()
+            )
+        )
