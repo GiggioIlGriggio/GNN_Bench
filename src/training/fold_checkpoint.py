@@ -63,6 +63,210 @@ class FoldBundle:
 
 
 # ---------------------------------------------------------------------------
+# Per-fold read view (ADR-0009)
+# ---------------------------------------------------------------------------
+
+class FoldCheckpoint:
+    """The single read path for one outer fold's persisted artifacts.
+
+    Construct from a fold directory (or via :meth:`for_fold` from a root
+    and a fold index), then call typed accessors to load only what you
+    need:
+
+    - :meth:`load_state_dict` — raw model weights, no model construction
+    - :meth:`load_model` — reconstructs the model from saved configs and
+      loads weights
+    - :meth:`load_barrier` — reconstructs the :class:`FoldBarrier` from
+      ``barrier.pt`` (returns ``None`` when the file is absent)
+    - :meth:`load_metrics` — reads ``metrics.json``
+    - :meth:`load_bundle` — loads everything into a :class:`FoldBundle`
+
+    The on-disk layout is documented under
+    :ref:`Checkpoint layout <CONTEXT.md#checkpoint-layout>`.
+
+    Parameters
+    ----------
+    fold_dir : str | Path
+        Path to the fold directory (e.g.
+        ``checkpoints/rep_0/fold_3/``).
+    """
+
+    def __init__(self, fold_dir: str | Path) -> None:
+        self.fold_dir = Path(fold_dir)
+
+    @classmethod
+    def for_fold(cls, root: str | Path, fold_idx: int) -> "FoldCheckpoint":
+        """Build the view for fold *fold_idx* inside *root*.
+
+        Parameters
+        ----------
+        root : str | Path
+            Parent directory that holds ``fold_<K>/`` subdirectories.
+        fold_idx : int
+
+        Returns
+        -------
+        FoldCheckpoint
+        """
+        return cls(Path(root) / f"fold_{fold_idx}")
+
+    def load_state_dict(self, *, variant: str = "best") -> dict:
+        """Load raw model weights from ``model_<variant>.pt``.
+
+        Parameters
+        ----------
+        variant : str
+            ``"best"`` or ``"last"``.
+
+        Returns
+        -------
+        dict
+            Model state dict (CPU tensors).
+        """
+        if variant not in ("best", "last"):
+            raise ValueError(
+                f"variant must be 'best' or 'last', got {variant!r}"
+            )
+        path = self.fold_dir / f"model_{variant}.pt"
+        return torch.load(path, map_location="cpu", weights_only=True)
+
+    def load_model(
+        self,
+        *,
+        model_factory: Optional[Callable[[], "BrainGNN"]] = None,
+        num_nodes: int = 0,
+        variant: str = "best",
+    ) -> "BrainGNN":
+        """Reconstruct the model with weights loaded.
+
+        Reads ``model_config.json`` and ``feature_config.json`` from
+        the fold directory to rebuild the exact architecture used
+        during training. Falls back to *model_factory* when either
+        config file is absent (old checkpoints without config
+        metadata).
+
+        Parameters
+        ----------
+        model_factory : Optional[Callable[[], BrainGNN]]
+            Used only when the saved configs are absent. Required in
+            that case; ``None`` then raises ``FileNotFoundError``.
+        num_nodes : int
+            Number of nodes per graph (passed to ``get_model`` when
+            rebuilding from configs).
+        variant : str
+            ``"best"`` or ``"last"``.
+
+        Returns
+        -------
+        BrainGNN
+        """
+        from src.configs.feature_config import FeatureConfig
+        from src.configs.model_config import ModelConfig
+        from src.models.registry import get_model
+
+        model_cfg_path = self.fold_dir / "model_config.json"
+        feature_cfg_path = self.fold_dir / "feature_config.json"
+
+        if model_cfg_path.exists() and feature_cfg_path.exists():
+            with open(model_cfg_path) as f:
+                model_cfg = ModelConfig(**json.load(f))
+            with open(feature_cfg_path) as f:
+                feature_cfg = FeatureConfig(**json.load(f))
+            model = get_model(
+                name=model_cfg.name,
+                cfg=model_cfg,
+                node_feat_dim=feature_cfg.node_feat_dim,
+                edge_feat_dim=feature_cfg.edge_feat_dim,
+                num_nodes=num_nodes,
+            )
+        elif model_factory is not None:
+            log.warning(
+                "model_config.json / feature_config.json not found in %s — "
+                "using model_factory() as fallback.",
+                self.fold_dir,
+            )
+            model = model_factory()
+        else:
+            raise FileNotFoundError(
+                f"{self.fold_dir} has no model_config.json/feature_config.json "
+                "and no model_factory was provided; cannot reconstruct model."
+            )
+
+        model.load_state_dict(self.load_state_dict(variant=variant))
+        return model
+
+    def load_barrier(self) -> Optional[FoldBarrier]:
+        """Reload the per-fold leakage barrier from ``barrier.pt``.
+
+        Returns ``None`` when ``barrier.pt`` is absent — typical for old
+        checkpoints predating ADR-0009.
+
+        The barrier reconstructs its transformers from the persisted
+        state alone: the GLM substate carries ``(col_start, col_end)``
+        and the label-norm substate carries its strategy. Composite-
+        mode labels (``LabelBuilder``-fit state) are NOT round-tripped
+        — callers that need ``transform_labels`` on composite-mode
+        folds must reconstruct the ``LabelBuilder`` themselves and call
+        :meth:`FoldBarrier.load` directly with ``label_builder=...``.
+
+        Returns
+        -------
+        Optional[FoldBarrier]
+        """
+        path = self.fold_dir / "barrier.pt"
+        if not path.exists():
+            return None
+        return FoldBarrier.load(path)
+
+    def load_metrics(self) -> dict:
+        """Return the parsed contents of ``metrics.json``.
+
+        Returns
+        -------
+        dict
+            Top-level keys: ``"best"`` and ``"last"``, each mapping to
+            a ``{"metrics": MetricDict, "epoch": int}`` payload.
+        """
+        with open(self.fold_dir / "metrics.json") as f:
+            return json.load(f)
+
+    def load_bundle(self) -> "FoldBundle":
+        """Load every artifact in the fold directory into a FoldBundle.
+
+        Returns
+        -------
+        FoldBundle
+        """
+        metrics = self.load_metrics()
+        return FoldBundle(
+            fold_idx=self._fold_idx_from_dir(),
+            best_model_state_dict=self.load_state_dict(variant="best"),
+            last_model_state_dict=self.load_state_dict(variant="last"),
+            barrier=self.load_barrier(),
+            best_metrics=metrics["best"]["metrics"],
+            best_epoch=metrics["best"]["epoch"],
+            last_metrics=metrics["last"]["metrics"],
+            last_epoch=metrics["last"]["epoch"],
+        )
+
+    def _fold_idx_from_dir(self) -> int:
+        """Parse the fold index from the directory's basename."""
+        name = self.fold_dir.name
+        if not name.startswith("fold_"):
+            raise ValueError(
+                f"fold directory name must start with 'fold_', got "
+                f"{name!r} (full path: {self.fold_dir})"
+            )
+        try:
+            return int(name[len("fold_"):])
+        except ValueError as e:
+            raise ValueError(
+                f"fold directory name must end with an integer index, "
+                f"got {name!r}"
+            ) from e
+
+
+# ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
 

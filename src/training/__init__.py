@@ -9,7 +9,7 @@ from src.training.metrics import (
     compute_metrics,
     aggregate_fold_metrics,
 )
-from src.training.fold_checkpoint import CheckpointManager, FoldBundle
+from src.training.fold_checkpoint import CheckpointManager, FoldBundle, FoldCheckpoint
 
 __all__ = [
     "Trainer",
@@ -23,4 +23,5 @@ __all__ = [
     "aggregate_fold_metrics",
     "CheckpointManager",
     "FoldBundle",
+    "FoldCheckpoint",
 ]
