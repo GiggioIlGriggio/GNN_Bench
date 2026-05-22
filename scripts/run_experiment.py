@@ -438,15 +438,10 @@ def main(cfg: DictConfig) -> None:
             "Nested CV complete — mean=%s  std=%s",
             nested_result.mean_metrics, nested_result.std_metrics,
         )
-        if explainer_cfg.enabled:
-            # The legacy GNNExplainerRunner walks fold_<K>/ directly under
-            # checkpoint_dir; nested CV writes rep_<R>/fold_<K>/ so the
-            # explainer needs an update before it can run on nested outputs.
-            log.warning(
-                "GNNExplainer is enabled but the nested-CV checkpoint layout "
-                "(rep_<R>/fold_<K>/) is not yet supported by GNNExplainerRunner. "
-                "Skipping; see ADR-0008 follow-ups."
-            )
+        _maybe_run_explainer(
+            explainer_cfg, graphs, labels, model_factory, trainer_cfg,
+            glm_col_range, feature_cfg.glm_normalize,
+        )
 
     # ------------------------------------------------------------------
     # 10) Finish wandb run and (for sweep trials) return the objective

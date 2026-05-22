@@ -95,3 +95,14 @@ class ExplainerConfig(BaseModel):
             "under <output_dir>/fold_<N>/subjects/."
         ),
     )
+
+    # --- Nested-CV scope -----------------------------------------------------
+    rep: Optional[int] = Field(
+        default=None,
+        description=(
+            "Restrict the explainer to a single nested-CV repetition (0-indexed). "
+            "Only honoured when the checkpoint root has the rep_<R>/fold_<K>/ "
+            "layout — ignored under the legacy fold_<K>/ layout. Useful for "
+            "quick iteration on paper-grade runs (n_repetitions=10)."
+        ),
+    )
