@@ -5,7 +5,7 @@
 #SBATCH --account=rad
 #SBATCH --gres=gpu:1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=32G
 #SBATCH --time=23:59:00
 #SBATCH --output=slurm/logs/%j.out
