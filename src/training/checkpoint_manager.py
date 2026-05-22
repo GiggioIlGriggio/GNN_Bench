@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 import torch
 
-from src.training.label_normalizer import LabelNormalizer
+from src.training.fold_barrier import FoldBarrier
 from src.training.metrics import MetricDict
 
 if TYPE_CHECKING:
@@ -36,8 +35,8 @@ class FoldCheckpoint:
         PyTorch model state dict from the best epoch.
     last_model_state_dict : dict
         PyTorch model state dict from the final epoch.
-    normalizer : LabelNormalizer
-        Fitted label normaliser for this fold.
+    barrier : FoldBarrier
+        Outer-train-fit leakage barrier (ADR-0009).
     best_metrics : MetricDict
         Validation metrics at the best epoch.
     best_epoch : int
@@ -51,7 +50,7 @@ class FoldCheckpoint:
     fold_idx: int = 0
     best_model_state_dict: dict = None  # type: ignore[assignment]
     last_model_state_dict: dict = None  # type: ignore[assignment]
-    normalizer: Optional[LabelNormalizer] = None
+    barrier: Optional[FoldBarrier] = None
     best_metrics: MetricDict = None  # type: ignore[assignment]
     best_epoch: int = 0
     last_metrics: MetricDict = None  # type: ignore[assignment]
@@ -79,7 +78,7 @@ class CheckpointManager:
         fold_idx: int,
         best_model_state_dict: dict,
         last_model_state_dict: dict,
-        label_normalizer: LabelNormalizer,
+        barrier: FoldBarrier,
         best_metrics: MetricDict,
         best_epoch: int,
         last_metrics: MetricDict,
@@ -87,7 +86,7 @@ class CheckpointManager:
         model_config: Optional[Dict] = None,
         feature_config: Optional[Dict] = None,
     ) -> Path:
-        """Save best and last model checkpoints, normaliser, and metrics for one fold.
+        """Save best and last model checkpoints, fold barrier, and metrics for one fold.
 
         Parameters
         ----------
@@ -96,7 +95,9 @@ class CheckpointManager:
             State dict from the epoch with the best validation metric.
         last_model_state_dict : dict
             State dict from the final training epoch.
-        label_normalizer : LabelNormalizer
+        barrier : FoldBarrier
+            Outer-train-fit leakage barrier (ADR-0009). Persisted as
+            ``barrier.pt``.
         best_metrics : MetricDict
         best_epoch : int
         last_metrics : MetricDict
@@ -117,8 +118,7 @@ class CheckpointManager:
         torch.save(best_model_state_dict, fold_dir / "model_best.pt")
         torch.save(last_model_state_dict, fold_dir / "model_last.pt")
 
-        with open(fold_dir / "normalizer.pkl", "wb") as f:
-            pickle.dump(label_normalizer, f)
+        barrier.save(fold_dir / "barrier.pt")
 
         with open(fold_dir / "metrics.json", "w") as f:
             json.dump(
@@ -169,8 +169,14 @@ class CheckpointManager:
             fold_dir / "model_last.pt", map_location="cpu", weights_only=True
         )
 
-        with open(fold_dir / "normalizer.pkl", "rb") as f:
-            normalizer = pickle.load(f)
+        barrier_path = fold_dir / "barrier.pt"
+        if barrier_path.exists():
+            barrier: Optional[FoldBarrier] = FoldBarrier(label_norm_strategy="standard")
+            barrier.load_state_dict(
+                torch.load(barrier_path, map_location="cpu", weights_only=False)
+            )
+        else:
+            barrier = None
 
         with open(fold_dir / "metrics.json") as f:
             metrics_data = json.load(f)
@@ -179,7 +185,7 @@ class CheckpointManager:
             fold_idx=fold_idx,
             best_model_state_dict=best_state_dict,
             last_model_state_dict=last_state_dict,
-            normalizer=normalizer,
+            barrier=barrier,
             best_metrics=metrics_data["best"]["metrics"],
             best_epoch=metrics_data["best"]["epoch"],
             last_metrics=metrics_data["last"]["metrics"],
@@ -192,8 +198,8 @@ class CheckpointManager:
         model_factory: Callable[[], BrainGNN],
         num_nodes: int = 0,
         variant: str = "best",
-    ) -> Tuple[BrainGNN, LabelNormalizer]:
-        """Load a model with its weights and normalizer for a specific fold.
+    ) -> Tuple[BrainGNN, Optional[FoldBarrier]]:
+        """Load a model with its weights and fold barrier for a specific fold.
 
         Reads ``model_config.json`` and ``feature_config.json`` from the fold
         directory to reconstruct the exact architecture used during training.
@@ -212,7 +218,7 @@ class CheckpointManager:
 
         Returns
         -------
-        Tuple[BrainGNN, LabelNormalizer]
+        Tuple[BrainGNN, Optional[FoldBarrier]]
         """
         from src.configs.feature_config import FeatureConfig
         from src.configs.model_config import ModelConfig
@@ -246,10 +252,16 @@ class CheckpointManager:
         state_dict = torch.load(weights_file, map_location="cpu", weights_only=True)
         model.load_state_dict(state_dict)
 
-        with open(fold_dir / "normalizer.pkl", "rb") as f:
-            normalizer = pickle.load(f)
+        barrier_path = fold_dir / "barrier.pt"
+        if barrier_path.exists():
+            barrier: Optional[FoldBarrier] = FoldBarrier(label_norm_strategy="standard")
+            barrier.load_state_dict(
+                torch.load(barrier_path, map_location="cpu", weights_only=False)
+            )
+        else:
+            barrier = None
 
-        return model, normalizer
+        return model, barrier
 
     # ------------------------------------------------------------------
     # Epoch-level checkpoint helpers
