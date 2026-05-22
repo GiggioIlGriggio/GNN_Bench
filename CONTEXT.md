@@ -64,6 +64,7 @@ Terms are defined as used in this codebase. Synonyms in parentheses are accepted
 | **Label normalisation** | Per-fold standardisation of the scalar regression target. Fit only on training subjects; applied to val and test. Prevents data leakage. | "target scaling", "output normalisation" |
 | **Composite label** | A regression target derived from multiple raw score columns, either by weighted combination or PCA. Built per-fold by `LabelBuilder` to avoid leakage from PCA fitting. | "multi-component label" |
 | **GLM normalisation** | Per-node z-scoring of GLM feature columns across training subjects. Applied per fold to prevent leakage. Controlled by `FeatureConfig.glm_normalize`. | — |
+| **Fold barrier** | The per-fold leakage-protection coordinator. Owns the composite-label `LabelBuilder` (when configured), the `LabelNormalizer`, and the `GLMFeatureNormalizer` as a single fitted bundle for one outer fold's train pool. Exposes `fit(train_graphs, train_labels_or_components)`, `transform_graphs(graphs) → graphs` (returns new graphs; never mutates inputs), `transform_labels(...)`, and `inverse_transform_labels(...)`. Persisted as a typed state-dict (`barrier.pt`) inside the fold's [Checkpoint](#checkpoint-layout). Unifies the three leakage protections from [ADR-0004](docs/adr/0004-no-data-leakage.md) into one module instead of three transformers fit and threaded by hand. | "leakage barrier", "preprocessor", reaching into the bundled `LabelNormalizer` directly |
 | **Backbone** | The GNN message-passing layers (GCN, GAT, GIN, Graph Transformer). Produces node-level embeddings. | "encoder base", "GNN layers" |
 | **Fusion** | A module that combines SC and FC embeddings in multimodal mode (concat, cross-attention, gated). | "aggregation" (ambiguous) |
 | **Head** | The MLP that maps the pooled graph embedding to a scalar prediction. Currently only `RegressionHead`. | "decoder", "output layer" |
@@ -73,7 +74,7 @@ Terms are defined as used in this codebase. Synonyms in parentheses are accepted
 | **Unit loss** | BrainGNN auxiliary loss that penalises pooling scores far from 0 or 1, encouraging binary (hard) node selection. Weight controlled by `model_params.unit_loss_weight`. | — |
 | **TopK loss** | BrainGNN auxiliary loss that encourages consistent top-K ROI selection across training samples. Weight controlled by `model_params.topk_loss_weight`. | — |
 | **model_params** | A free-form `dict` field in `ModelConfig` for model-specific hyperparameters (e.g. `pool_ratio`, `unit_loss_weight`). Read by the model constructor; ignored by all other models. Avoids adding model-specific fields to the shared `ModelConfig` schema. | "extra_params", "kwargs" |
-| **Checkpoint** | Saved refit-on-TrainVal model `state_dict` + `LabelNormalizer` + metrics for one outer fold. Stored under `checkpoints/rep_<R>/fold_<K>/` ([nested-CV layout](#checkpoint-layout)). Legacy `HydraSweep` runs still write the flat `checkpoints/fold_<K>/` layout. | "model weights", "snapshot" (use "epoch snapshot" for epoch-level saves) |
+| **Checkpoint** | The complete persistent record of one outer fold under `checkpoints/rep_<R>/fold_<K>/` — the refit-on-TrainVal model `state_dict` plus the fitted per-fold leakage state inside `barrier.pt` (see [Fold barrier](#glossary)) plus per-fold metadata (`best_hparams.json`, `trials.csv`, `test_predictions.npz`, `model_config.json`, `feature_config.json`, `metrics.json`). See [Checkpoint layout](#checkpoint-layout) for the full file list. Legacy `HydraSweep` runs still write the flat `checkpoints/fold_<K>/` layout. | "model weights", "snapshot" (use "epoch snapshot" for epoch-level saves) |
 | **Epoch snapshot** | A model `state_dict` saved mid-training (either every N epochs or on best-val). Stored in `epoch_checkpoints/` next to the fold checkpoint. | — |
 | **Allowlist** | An optional text file listing subject IDs to include. When set, subjects not in the list are silently skipped; IDs in the list that are missing on disk raise an error. | "whitelist" |
 
@@ -228,7 +229,7 @@ The standard nested-CV branch ([ADR-0008](docs/adr/0008-nested-cross-validation.
     └── fold_<K>/                   # K = 0 .. n_outer_folds-1
         ├── model_best.pt           # refit-on-TrainVal state_dict — the only model scored on outer Test
         ├── model_last.pt           # final-epoch state_dict (== best in refit because no inner val)
-        ├── normalizer.pkl          # outer-TrainVal-fit LabelNormalizer (pickle)
+        ├── barrier.pt              # outer-TrainVal-fit FoldBarrier state-dict (torch.save, ADR-0009)
         ├── metrics.json            # outer-Test metrics for this fold (MAE, RMSE, R², Pearson r)
         ├── model_config.json       # ModelConfig.model_dump() at the winning HPs
         ├── feature_config.json     # FeatureConfig used to build this fold's graphs
@@ -281,7 +282,7 @@ Until the retention decision in [ADR-0008](docs/adr/0008-nested-cross-validation
 └── fold_<K>/
     ├── model_best.pt
     ├── model_last.pt
-    ├── normalizer.pkl
+    ├── barrier.pt
     ├── metrics.json
     ├── model_config.json
     └── feature_config.json
