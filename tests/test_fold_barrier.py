@@ -70,3 +70,27 @@ class TestGLMNormalizerStateDict:
         assert n2.col_start == 1 and n2.col_end == 3
         assert torch.allclose(n2.mean_, n1.mean_)
         assert torch.allclose(n2.std_, n1.std_)
+
+
+class TestLabelBuilderStateDict:
+    """state_dict carries component normalisation stats + composite op state."""
+
+    def _cfg_single(self):
+        from src.configs.label_config import LabelConfig
+        return LabelConfig(target="score", id_column="ID")
+
+    def test_single_column_roundtrip(self) -> None:
+        import pandas as pd
+        from src.datasets.label_builder import LabelBuilder
+
+        cfg = self._cfg_single()
+        lb1 = LabelBuilder(cfg)
+        components = pd.DataFrame({"score": [1.0, 2.0, 3.0, 4.0, 5.0]})
+        lb1.fit(components)
+        state = lb1.state_dict()
+
+        lb2 = LabelBuilder(cfg)
+        lb2.load_state_dict(state)
+        np.testing.assert_allclose(
+            lb2.transform(components), lb1.transform(components),
+        )
