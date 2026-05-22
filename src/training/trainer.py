@@ -24,7 +24,6 @@ from rich.table import Table
 
 from src.configs.trainer_config import TrainerConfig
 from src.models.base_model import BrainGNN
-from src.training.label_normalizer import LabelNormalizer
 from src.training.metrics import MetricDict, compute_metrics
 
 if TYPE_CHECKING:
@@ -161,7 +160,7 @@ class Trainer:
         model: BrainGNN,
         train_loader: DataLoader,
         val_loader: DataLoader,
-        label_normalizer: LabelNormalizer,
+        inverse_transform: Callable[[np.ndarray], np.ndarray],
         fold_idx: int,
         on_epoch_end_callback: Optional[Callable[[int, dict, bool], None]] = None,
     ) -> TrainResult:
@@ -178,8 +177,10 @@ class Trainer:
             Training data loader.
         val_loader : DataLoader
             Validation data loader.
-        label_normalizer : LabelNormalizer
-            Fitted normalizer for the current fold.
+        inverse_transform : Callable[[np.ndarray], np.ndarray]
+            Maps normalised predictions/targets back to the original
+            label scale. Pass ``barrier.inverse_transform_labels`` from
+            the CV path (ADR-0009).
         fold_idx : int
             Current fold index (for logging).
         on_epoch_end_callback : Optional[Callable[[int, dict, bool], None]]
@@ -233,11 +234,11 @@ class Trainer:
                 )
                 # Compute train metrics from the predictions already made during
                 # the forward pass — no second pass over the training data.
-                train_preds = label_normalizer.inverse_transform(train_preds_norm)
-                train_targets = label_normalizer.inverse_transform(train_targets_norm)
+                train_preds = inverse_transform(train_preds_norm)
+                train_targets = inverse_transform(train_targets_norm)
                 train_metrics = compute_metrics(train_targets, train_preds)
 
-                val_metrics = self.evaluate(model, val_loader, label_normalizer, "val")
+                val_metrics = self.evaluate(model, val_loader, inverse_transform, "val")
 
                 # Compute validation loss for display
                 model.eval()
@@ -333,7 +334,7 @@ class Trainer:
         self,
         model: BrainGNN,
         loader: DataLoader,
-        label_normalizer: LabelNormalizer,
+        inverse_transform: Callable[[np.ndarray], np.ndarray],
     ) -> Tuple[np.ndarray, np.ndarray]:
         """Run inference and return ground-truth and predictions in the original label scale.
 
@@ -343,8 +344,9 @@ class Trainer:
             Trained model (set to eval mode internally).
         loader : DataLoader
             Data loader for the split.
-        label_normalizer : LabelNormalizer
-            For inverse-transforming predictions back to original scale.
+        inverse_transform : Callable[[np.ndarray], np.ndarray]
+            Maps normalised predictions/targets back to the original
+            label scale. Pass ``barrier.inverse_transform_labels``.
 
         Returns
         -------
@@ -363,15 +365,15 @@ class Trainer:
                 all_preds.append(pred.cpu().numpy())
                 all_targets.append(batch.y.view(-1).cpu().numpy())
 
-        y_pred = label_normalizer.inverse_transform(np.concatenate(all_preds))
-        y_true = label_normalizer.inverse_transform(np.concatenate(all_targets))
+        y_pred = inverse_transform(np.concatenate(all_preds))
+        y_true = inverse_transform(np.concatenate(all_targets))
         return y_true, y_pred
 
     def evaluate(
         self,
         model: BrainGNN,
         loader: DataLoader,
-        label_normalizer: LabelNormalizer,
+        inverse_transform: Callable[[np.ndarray], np.ndarray],
         split: Literal["val", "test"],
     ) -> MetricDict:
         """Evaluate the model on a data split.
@@ -382,8 +384,8 @@ class Trainer:
             Trained model (set to eval mode internally).
         loader : DataLoader
             Data loader for the split.
-        label_normalizer : LabelNormalizer
-            For inverse-transforming predictions back to original scale.
+        inverse_transform : Callable[[np.ndarray], np.ndarray]
+            Maps normalised predictions back to the original label scale.
         split : Literal["val", "test"]
             Split name for logging.
 
@@ -392,7 +394,7 @@ class Trainer:
         MetricDict
             Computed metrics (MAE, RMSE, R², Pearson r).
         """
-        y_true, y_pred = self.predict(model, loader, label_normalizer)
+        y_true, y_pred = self.predict(model, loader, inverse_transform)
         return compute_metrics(y_true, y_pred)
 
     # ------------------------------------------------------------------
