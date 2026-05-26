@@ -16,7 +16,7 @@ from torch_geometric.loader import DataLoader
 from src.configs.trainer_config import TrainerConfig
 from src.datasets.label_builder import LabelBuilder
 from src.models.base_model import BrainGNN
-from src.training.checkpoint_manager import CheckpointManager
+from src.training.fold_checkpoint import CheckpointManager
 from src.training.fold_barrier import FoldBarrier
 from src.training.metrics import MetricDict, compute_metrics
 from src.training.trainer import Trainer, TrainResult

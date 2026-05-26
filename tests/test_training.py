@@ -19,7 +19,7 @@ from src.training.metrics import (
     aggregate_fold_metrics,
     compute_metrics,
 )
-from src.training.checkpoint_manager import CheckpointManager, FoldCheckpoint
+from src.training.fold_checkpoint import CheckpointManager, FoldBundle
 
 
 # ---------------------------------------------------------------------------
@@ -128,15 +128,15 @@ class TestCheckpointManager:
         )
 
     def test_load_recovers_state(self, tmp_path: Path) -> None:
-        """load_fold_checkpoint should recover saved state."""
+        """FoldCheckpoint.load_bundle should recover saved state."""
         raise NotImplementedError(
-            "TODO: save then load, assert metrics match"
+            "TODO: save then load via FoldCheckpoint.load_bundle, assert metrics match"
         )
 
     def test_load_missing_raises(self, tmp_path: Path) -> None:
         """Loading a non-existent fold should raise FileNotFoundError."""
         raise NotImplementedError(
-            "TODO: call load_fold_checkpoint(99), assert FileNotFoundError"
+            "TODO: call FoldCheckpoint(missing_dir).load_bundle(), assert FileNotFoundError"
         )
 
 

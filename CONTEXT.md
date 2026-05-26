@@ -74,7 +74,7 @@ Terms are defined as used in this codebase. Synonyms in parentheses are accepted
 | **Unit loss** | BrainGNN auxiliary loss that penalises pooling scores far from 0 or 1, encouraging binary (hard) node selection. Weight controlled by `model_params.unit_loss_weight`. | — |
 | **TopK loss** | BrainGNN auxiliary loss that encourages consistent top-K ROI selection across training samples. Weight controlled by `model_params.topk_loss_weight`. | — |
 | **model_params** | A free-form `dict` field in `ModelConfig` for model-specific hyperparameters (e.g. `pool_ratio`, `unit_loss_weight`). Read by the model constructor; ignored by all other models. Avoids adding model-specific fields to the shared `ModelConfig` schema. | "extra_params", "kwargs" |
-| **Checkpoint** | The complete persistent record of one outer fold under `checkpoints/rep_<R>/fold_<K>/` — the refit-on-TrainVal model `state_dict` plus the fitted per-fold leakage state inside `barrier.pt` (see [Fold barrier](#glossary)) plus per-fold metadata (`best_hparams.json`, `trials.csv`, `test_predictions.npz`, `model_config.json`, `feature_config.json`, `metrics.json`). See [Checkpoint layout](#checkpoint-layout) for the full file list. Legacy `HydraSweep` runs still write the flat `checkpoints/fold_<K>/` layout. | "model weights", "snapshot" (use "epoch snapshot" for epoch-level saves) |
+| **Checkpoint** | The complete persistent record of one outer fold under `checkpoints/rep_<R>/fold_<K>/` — the refit-on-TrainVal model `state_dict` plus the fitted per-fold leakage state inside `barrier.pt` (see [Fold barrier](#glossary)) plus per-fold metadata (`best_hparams.json`, `trials.csv`, `test_predictions.npz`, `model_config.json`, `feature_config.json`, `metrics.json`). Reads go through `FoldCheckpoint(fold_dir)` — the single per-fold read path that owns model + barrier + metrics loading (ADR-0009). Writes go through `CheckpointManager`. See [Checkpoint layout](#checkpoint-layout) for the full file list. Legacy `HydraSweep` runs still write the flat `checkpoints/fold_<K>/` layout. | "model weights", "snapshot" (use "epoch snapshot" for epoch-level saves) |
 | **Epoch snapshot** | A model `state_dict` saved mid-training (either every N epochs or on best-val). Stored in `epoch_checkpoints/` next to the fold checkpoint. | — |
 | **Allowlist** | An optional text file listing subject IDs to include. When set, subjects not in the list are silently skipped; IDs in the list that are missing on disk raise an error. | "whitelist" |
 
@@ -118,7 +118,7 @@ scripts/compare_models.py          # Cross-run statistical comparison: consumes 
 │   ├── label_normalizer.py         # LabelNormalizer: standard/robust/minmax/none, serialisable
 │   ├── glm_normalizer.py           # GLMFeatureNormalizer: per-node z-score of GLM columns
 │   ├── metrics.py                  # compute_metrics (MAE, RMSE, R², Pearson r), aggregate_fold_metrics
-│   └── checkpoint_manager.py       # CheckpointManager: save/load fold and epoch checkpoints
+│   └── fold_checkpoint.py          # FoldCheckpoint (per-fold read path) + FoldBundle + CheckpointManager (write-side / epoch helpers)
 │
 ├── src/sweeps/                     # Legacy hyperparameter sweeps (kept until retention decision; see ADR-0008 + open issue)
 │   ├── base_sweep.py               # SweepRunner (abstract)
