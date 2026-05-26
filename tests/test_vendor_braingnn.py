@@ -185,3 +185,41 @@ class TestAuxiliaryLoss:
         model.encode(data)
         aux = model.auxiliary_loss()
         assert torch.isfinite(aux["consist_loss"])
+
+
+class TestSigmoidComposition:
+    def test_stashed_scores_are_sigmoid_of_pool_score(self) -> None:
+        """encode() must apply exactly one extra sigmoid to the pool's score
+        (the 2nd of the 3 in the upstream path). The pool already applied the
+        1st; consist_loss applies the 3rd."""
+        torch.manual_seed(0)
+        model = _make_adapter(num_nodes=10, node_feat_dim=10, hidden_dim=16)
+        model.eval()
+        data = _make_batch(num_graphs=2, num_nodes=10, node_feat_dim=10)
+
+        # Re-run the pool path manually to capture the raw (post-1st-sigmoid)
+        # score the pool returns, then confirm encode stored sigmoid() of it.
+        x = data.x
+        edge_weight = data.edge_attr[:, 0]
+        pos = torch.eye(10).repeat(2, 1)
+        with torch.no_grad():
+            xc = model.conv1(x, data.edge_index, edge_weight, pos)
+            _, _, _, _, _, raw_score1 = model.pool1(
+                xc, data.edge_index, edge_weight, data.batch
+            )
+            model.encode(data)
+        expected_s1 = torch.sigmoid(raw_score1).view(2, -1)
+        assert torch.allclose(model._s1, expected_s1, atol=1e-5)
+
+    def test_consist_loss_applies_third_sigmoid(self) -> None:
+        """consist_loss sigmoids its input — the 3rd sigmoid. Lock by comparing
+        against a manual non-sigmoid Laplacian (they must differ)."""
+        s = torch.rand(5, 8)  # already in (0,1)
+        from src.models.vendor.braingnn.losses import consist_loss
+        with_sigmoid = float(consist_loss(s))
+        # manual Laplacian WITHOUT the internal sigmoid:
+        ss = s
+        W = torch.ones(5, 5)
+        L = torch.eye(5) * W.sum(1) - W
+        no_sigmoid = float(torch.trace(ss.t() @ L @ ss) / 25)
+        assert abs(with_sigmoid - no_sigmoid) > 1e-6
