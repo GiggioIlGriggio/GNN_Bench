@@ -46,3 +46,51 @@ class TestVendoredLosses:
         s = torch.rand(4, 10)
         loss = consist_loss(s)
         assert torch.isfinite(torch.as_tensor(float(loss)))
+
+
+from src.configs.model_config import ModelConfig
+from src.models.registry import get_model
+from src.models.base_model import BrainGNN
+
+
+def _make_adapter(num_nodes=10, node_feat_dim=10, hidden_dim=16, **mp):
+    params = {"pool_ratio": 0.5, "roi_embed_dim": 8}
+    params.update(mp)
+    cfg = ModelConfig(
+        name="braingnn", hidden_dim=hidden_dim, dropout=0.0, model_params=params
+    )
+    return get_model(
+        "braingnn", cfg, node_feat_dim=node_feat_dim, edge_feat_dim=1,
+        num_nodes=num_nodes,
+    )
+
+
+class TestAdapterConstruction:
+    def test_is_braingnn_subclass(self) -> None:
+        model = _make_adapter()
+        assert isinstance(model, BrainGNN)
+
+    def test_pools_use_sigmoid(self) -> None:
+        model = _make_adapter()
+        assert model.pool1.select.act is torch.sigmoid
+        assert model.pool2.select.act is torch.sigmoid
+
+    def test_head_input_dim_is_hidden_times_four(self) -> None:
+        model = _make_adapter(hidden_dim=16)
+        first_linear = model.head.layers[0]
+        assert first_linear.in_features == 16 * 4
+
+    def test_default_lambdas(self) -> None:
+        model = _make_adapter()
+        assert model.lambda_topk == 0.1
+        assert model.lambda_unit == 0.0
+        assert model.lambda_consist == 0.1
+        assert model.consist_n_bins == 4
+
+    def test_num_nodes_zero_raises(self) -> None:
+        cfg = ModelConfig(
+            name="braingnn", hidden_dim=16, dropout=0.0,
+            model_params={"pool_ratio": 0.5, "roi_embed_dim": 8},
+        )
+        with __import__("pytest").raises(ValueError):
+            get_model("braingnn", cfg, node_feat_dim=10, edge_feat_dim=1, num_nodes=0)
