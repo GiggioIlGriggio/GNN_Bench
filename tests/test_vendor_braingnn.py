@@ -94,3 +94,54 @@ class TestAdapterConstruction:
         )
         with __import__("pytest").raises(ValueError):
             get_model("braingnn", cfg, node_feat_dim=10, edge_feat_dim=1, num_nodes=0)
+
+
+import torch_geometric.data as geo_data
+
+
+def _make_batch(num_graphs=2, num_nodes=10, node_feat_dim=10, edge_feat_dim=1,
+                num_edges_per_graph=20):
+    all_x, all_ei, all_ea, all_batch = [], [], [], []
+    offset = 0
+    for g in range(num_graphs):
+        all_x.append(torch.randn(num_nodes, node_feat_dim))
+        all_ei.append(torch.randint(0, num_nodes, (2, num_edges_per_graph)) + offset)
+        all_ea.append(torch.rand(num_edges_per_graph, edge_feat_dim))
+        all_batch.append(torch.full((num_nodes,), g, dtype=torch.long))
+        offset += num_nodes
+    return geo_data.Data(
+        x=torch.cat(all_x, 0), edge_index=torch.cat(all_ei, 1),
+        edge_attr=torch.cat(all_ea, 0), batch=torch.cat(all_batch, 0),
+        y=torch.randn(num_graphs, 1),
+    )
+
+
+class TestAdapterForward:
+    def test_encode_shape(self) -> None:
+        hidden = 16
+        model = _make_adapter(num_nodes=10, node_feat_dim=10, hidden_dim=hidden)
+        model.eval()
+        data = _make_batch(num_graphs=3, num_nodes=10, node_feat_dim=10)
+        with torch.no_grad():
+            emb = model.encode(data)
+        assert emb.shape == (3, hidden * 4)
+
+    def test_forward_shape(self) -> None:
+        model = _make_adapter(num_nodes=10, node_feat_dim=10, hidden_dim=16)
+        model.eval()
+        data = _make_batch(num_graphs=3, num_nodes=10, node_feat_dim=10)
+        with torch.no_grad():
+            out = model(data)
+        assert out.shape == (3, 1)
+
+    def test_encode_stashes_aux_tensors(self) -> None:
+        model = _make_adapter(num_nodes=10, node_feat_dim=10, hidden_dim=16)
+        model.train()
+        data = _make_batch(num_graphs=4, num_nodes=10, node_feat_dim=10)
+        model.encode(data)
+        assert model._s1 is not None and model._s1.shape[0] == 4
+        assert model._s2 is not None and model._s2.shape[0] == 4
+        assert model._w1 is not None and model._w2 is not None
+        assert model._y is not None and model._y.numel() == 4
+        # scores are probabilities in (0, 1) (post double-sigmoid)
+        assert (model._s1 >= 0).all() and (model._s1 <= 1).all()

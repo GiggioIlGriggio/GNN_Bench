@@ -103,10 +103,63 @@ class BrainGNNModel(BrainGNN):
         self._y: Optional[torch.Tensor] = None
 
     def encode(self, data: torch_geometric.data.Data) -> torch.Tensor:
-        raise NotImplementedError  # implemented in Task 5
+        """Faithful port of upstream Network.forward, truncated at the readout.
+
+        Returns the hierarchical dual readout ``[B, hidden*4]`` and stashes
+        the pooling weights/scores + targets for ``auxiliary_loss``.
+        """
+        x, edge_index = data.x, data.edge_index
+        edge_attr = getattr(data, "edge_attr", None)
+
+        batch = getattr(data, "batch", None)
+        if batch is None:
+            batch = x.new_zeros(x.size(0), dtype=torch.long)
+        num_graphs = int(batch.max().item()) + 1
+
+        if edge_attr is not None:
+            edge_weight = edge_attr[:, 0] if edge_attr.dim() > 1 else edge_attr
+        else:
+            edge_weight = x.new_ones(edge_index.size(1))
+
+        # Synthesize upstream's data.pos: per-ROI identity, repeated per graph.
+        pos = F.one_hot(
+            torch.arange(self.num_nodes, device=x.device).repeat(num_graphs),
+            self.num_nodes,
+        ).float()
+
+        # --- Stage 1 ---
+        x = self.conv1(x, edge_index, edge_weight, pos)
+        x, edge_index, edge_weight, batch, perm, score1 = self.pool1(
+            x, edge_index, edge_weight, batch
+        )
+        pos = pos[perm]
+        x1 = torch.cat([global_max_pool(x, batch), global_mean_pool(x, batch)], dim=1)
+
+        # A² adjacency augmentation on the pooled subgraph.
+        edge_weight = edge_weight.squeeze()
+        edge_index, edge_weight = self._augment_adj(edge_index, edge_weight, x.size(0))
+
+        # --- Stage 2 ---
+        x = self.conv2(x, edge_index, edge_weight, pos)
+        x, edge_index, edge_weight, batch, perm, score2 = self.pool2(
+            x, edge_index, edge_weight, batch
+        )
+        pos = pos[perm]
+        x2 = torch.cat([global_max_pool(x, batch), global_mean_pool(x, batch)], dim=1)
+
+        # Stash for auxiliary_loss. The extra sigmoid here matches upstream
+        # Network.forward (see PROVENANCE: this is the 2nd of 3 sigmoids).
+        self._w1 = self.pool1.select.weight
+        self._w2 = self.pool2.select.weight
+        self._s1 = torch.sigmoid(score1).view(num_graphs, -1)
+        self._s2 = torch.sigmoid(score2).view(num_graphs, -1)
+        self._y = data.y.detach().view(-1)
+
+        return torch.cat([x1, x2], dim=1)  # [B, hidden*4]
 
     def decode(self, embedding: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError  # implemented in Task 5
+        """Configurable RegressionHead: [B, hidden*4] -> [B, 1]."""
+        return self.head(embedding)
 
     def auxiliary_loss(self) -> Optional[Dict[str, torch.Tensor]]:
         raise NotImplementedError  # implemented in Task 6
