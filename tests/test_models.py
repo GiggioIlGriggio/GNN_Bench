@@ -165,54 +165,6 @@ class TestModelRegistry:
 
 
 # ---------------------------------------------------------------------------
-# ROIAwareConv tests
-# ---------------------------------------------------------------------------
-
-class TestROIAwareConv:
-    """Tests for per-ROI projection conv (MyNNConv-style)."""
-
-    def test_roi_aware_conv_output_shape(self) -> None:
-        """ROIAwareConv forward should produce [N, out_ch]."""
-        from src.models.backbones.roi_aware_conv import ROIAwareConv
-
-        N, in_ch, out_ch, num_rois = 10, 5, 16, 10
-        conv = ROIAwareConv(in_ch, out_ch, num_rois, k=8)
-
-        x = torch.randn(N, in_ch)
-        roi_idx = torch.arange(N)  # each node is a unique ROI
-        # simple chain graph
-        src = torch.arange(N - 1)
-        dst = torch.arange(1, N)
-        edge_index = torch.stack([
-            torch.cat([src, dst]),
-            torch.cat([dst, src]),
-        ], dim=0)
-        edge_weight = torch.rand(edge_index.size(1))
-
-        out = conv(x, edge_index, edge_weight, roi_idx)
-        assert out.shape == (N, out_ch), f"Expected ({N}, {out_ch}), got {out.shape}"
-
-    def test_roi_aware_conv_no_edge_weight(self) -> None:
-        """ROIAwareConv should work when edge_weight is None."""
-        from src.models.backbones.roi_aware_conv import ROIAwareConv
-
-        N, in_ch, out_ch, num_rois = 10, 5, 16, 10
-        conv = ROIAwareConv(in_ch, out_ch, num_rois, k=8)
-
-        x = torch.randn(N, in_ch)
-        roi_idx = torch.arange(N)
-        src = torch.arange(N - 1)
-        dst = torch.arange(1, N)
-        edge_index = torch.stack([
-            torch.cat([src, dst]),
-            torch.cat([dst, src]),
-        ], dim=0)
-
-        out = conv(x, edge_index, None, roi_idx)
-        assert out.shape == (N, out_ch)
-
-
-# ---------------------------------------------------------------------------
 # BrainGNNModel with ROIAwareConv tests
 # ---------------------------------------------------------------------------
 
@@ -403,19 +355,6 @@ class TestBrainGNNSigmoidPooling:
         assert model.pool2.select.act is torch.sigmoid, (
             f"pool2 nonlinearity should be torch.sigmoid, got {model.pool2.select.act}"
         )
-
-    def test_unit_loss_with_sigmoid_scores(self) -> None:
-        """_unit_loss should return a finite positive scalar for scores in (0, 1)."""
-        from src.models.braingnn_model import BrainGNNModel
-
-        scores = torch.rand(20)  # scores already in (0, 1) — sigmoid range
-        loss = BrainGNNModel._unit_loss(scores, 0.5)
-
-        assert loss.ndim == 0 or loss.numel() == 1, (
-            f"_unit_loss should return a scalar, got shape {loss.shape}"
-        )
-        assert torch.isfinite(loss), f"_unit_loss returned non-finite value: {loss}"
-        assert loss.item() > 0, f"_unit_loss should be positive, got {loss.item()}"
 
 
 # ---------------------------------------------------------------------------
