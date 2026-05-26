@@ -61,11 +61,8 @@ src/models/braingnn_model.py   # rewritten adapter
 Delete `src/models/backbones/roi_aware_conv.py` after confirming no other
 importer remains.
 
-**License gate (blocking):** before copying any upstream file, verify the
-upstream repository's license permits redistribution and record the source URL,
-pinned commit SHA, and license text/attribution in `PROVENANCE.md`. If the
-upstream repo has no clear license, stop and raise it with the user before
-vendoring.
+**License:** the user holds the license to use this upstream code. Record the
+source URL, pinned commit SHA, and attribution in `PROVENANCE.md`.
 
 ## 2. Components
 
