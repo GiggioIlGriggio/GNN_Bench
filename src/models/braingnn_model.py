@@ -162,7 +162,42 @@ class BrainGNNModel(BrainGNN):
         return self.head(embedding)
 
     def auxiliary_loss(self) -> Optional[Dict[str, torch.Tensor]]:
-        raise NotImplementedError  # implemented in Task 6
+        """Upstream topk + unit + (binned) consistency losses, pre-scaled.
+
+        Returns None in eval or before the first forward.
+        """
+        if not self.training or self._s1 is None:
+            return None
+
+        topk = topk_loss(self._s1, self.pool_ratio) + topk_loss(self._s2, self.pool_ratio)
+        unit = (torch.norm(self._w1, p=2) - 1) ** 2 \
+            + (torch.norm(self._w2, p=2) - 1) ** 2
+        consist = self._binned_consist_loss(self._s1, self._y, self.consist_n_bins)
+
+        return {
+            "topk_loss": self.lambda_topk * topk,
+            "unit_loss": self.lambda_unit * unit,
+            "consist_loss": self.lambda_consist * consist,
+        }
+
+    def _binned_consist_loss(
+        self, s: torch.Tensor, y: torch.Tensor, n_bins: int
+    ) -> torch.Tensor:
+        """Consistency loss applied per target-quantile bin (regression analogue
+        of upstream's per-class loop). ``s`` is [B, n_kept], ``y`` is [B]."""
+        y = y.view(-1).float()
+        total = s.new_zeros(())
+        if y.numel() == 0 or n_bins <= 1:
+            return total + consist_loss(s)
+
+        qs = torch.linspace(0, 1, n_bins + 1, device=y.device)[1:-1]
+        edges = torch.quantile(y, qs)
+        bins = torch.bucketize(y, edges)  # values in [0, n_bins-1]
+        for b in range(n_bins):
+            mask = bins == b
+            if int(mask.sum()) >= 1:
+                total = total + consist_loss(s[mask])
+        return total
 
     def _augment_adj(self, edge_index, edge_weight, num_nodes):
         """A² on the pooled subgraph (verbatim from upstream Network.augment_adj).

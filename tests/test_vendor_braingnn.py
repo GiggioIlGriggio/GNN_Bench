@@ -145,3 +145,43 @@ class TestAdapterForward:
         assert model._y is not None and model._y.numel() == 4
         # scores are probabilities in (0, 1) (post double-sigmoid)
         assert (model._s1 >= 0).all() and (model._s1 <= 1).all()
+
+
+class TestAuxiliaryLoss:
+    def test_none_in_eval(self) -> None:
+        model = _make_adapter()
+        model.eval()
+        data = _make_batch(num_graphs=4, num_nodes=10, node_feat_dim=10)
+        model.encode(data)
+        assert model.auxiliary_loss() is None
+
+    def test_keys_and_scaling(self) -> None:
+        model = _make_adapter(
+            num_nodes=10, node_feat_dim=10, hidden_dim=16,
+            lambda_topk=0.2, lambda_unit=0.3, lambda_consist=0.4, consist_n_bins=3,
+        )
+        model.train()
+        data = _make_batch(num_graphs=6, num_nodes=10, node_feat_dim=10)
+        model.encode(data)
+        aux = model.auxiliary_loss()
+        assert set(aux.keys()) == {"topk_loss", "unit_loss", "consist_loss"}
+        for v in aux.values():
+            assert v.ndim == 0 and torch.isfinite(v)
+
+    def test_unit_loss_formula(self) -> None:
+        model = _make_adapter(lambda_unit=1.0, lambda_topk=0.0, lambda_consist=0.0)
+        model.train()
+        data = _make_batch(num_graphs=4, num_nodes=10, node_feat_dim=10)
+        model.encode(data)
+        aux = model.auxiliary_loss()
+        expected = (torch.norm(model._w1, p=2) - 1) ** 2 \
+            + (torch.norm(model._w2, p=2) - 1) ** 2
+        assert torch.allclose(aux["unit_loss"], expected, atol=1e-6)
+
+    def test_consist_binning_runs_with_more_bins_than_subjects(self) -> None:
+        model = _make_adapter(consist_n_bins=8)
+        model.train()
+        data = _make_batch(num_graphs=3, num_nodes=10, node_feat_dim=10)  # 3 < 8
+        model.encode(data)
+        aux = model.auxiliary_loss()
+        assert torch.isfinite(aux["consist_loss"])
