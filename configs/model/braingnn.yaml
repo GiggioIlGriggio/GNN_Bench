@@ -16,6 +16,8 @@ gnn_adjacency_type: weighted
 
 model_params:
   pool_ratio: 0.5          # fraction of ROIs kept at each TopK pooling stage
-  roi_embed_dim: 8         # dimensionality of the learned ROI position embedding
-  unit_loss_weight: 0.3    # weight on the unit (binary pooling) auxiliary loss
-  topk_loss_weight: 0.5    # weight on the topk (consist) auxiliary loss
+  roi_embed_dim: 8         # number of communities k in the per-ROI weight net
+  lambda_topk: 0.1         # weight on the per-graph topk pooling-score loss
+  lambda_unit: 0.0         # weight on the unit loss (‖pool weight‖₂ − 1)²
+  lambda_consist: 0.1      # weight on the per-target-bin consistency loss
+  consist_n_bins: 4        # target quantile bins for the consistency loss
