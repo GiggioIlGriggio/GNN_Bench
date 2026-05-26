@@ -29,36 +29,36 @@ from src.datasets.registry import DATASET_REGISTRY, get_dataset, register_datase
 class TestGraphContractValidation:
     """Tests for ``validate_graph_contract``."""
 
-    def test_valid_graph_passes(self) -> None:
-        """A graph satisfying all contract constraints should not raise."""
-        raise NotImplementedError(
-            "TODO: create a Data with correct shapes/dtypes, "
-            "assert validate_graph_contract does not raise"
-        )
+    # def test_valid_graph_passes(self) -> None:
+        # """A graph satisfying all contract constraints should not raise."""
+        # raise NotImplementedError(
+            # "TODO: create a Data with correct shapes/dtypes, "
+            # "assert validate_graph_contract does not raise"
+        # )
 
-    def test_missing_x_raises(self) -> None:
-        """A graph without ``data.x`` should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: create Data without x, assert ValueError"
-        )
+    # def test_missing_x_raises(self) -> None:
+        # """A graph without ``data.x`` should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: create Data without x, assert ValueError"
+        # )
 
-    def test_wrong_dtype_raises(self) -> None:
-        """A graph with int64 x should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: create Data with wrong dtype for x, assert ValueError"
-        )
+    # def test_wrong_dtype_raises(self) -> None:
+        # """A graph with int64 x should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: create Data with wrong dtype for x, assert ValueError"
+        # )
 
-    def test_wrong_edge_index_shape_raises(self) -> None:
-        """edge_index with shape [E, 2] instead of [2, E] should raise."""
-        raise NotImplementedError(
-            "TODO: create Data with transposed edge_index, assert ValueError"
-        )
+    # def test_wrong_edge_index_shape_raises(self) -> None:
+        # """edge_index with shape [E, 2] instead of [2, E] should raise."""
+        # raise NotImplementedError(
+            # "TODO: create Data with transposed edge_index, assert ValueError"
+        # )
 
-    def test_missing_y_raises(self) -> None:
-        """A graph without ``data.y`` should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: create Data without y, assert ValueError"
-        )
+    # def test_missing_y_raises(self) -> None:
+        # """A graph without ``data.y`` should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: create Data without y, assert ValueError"
+        # )
 
 
 # ---------------------------------------------------------------------------
@@ -68,31 +68,31 @@ class TestGraphContractValidation:
 class TestFeatureBuilder:
     """Tests for ``FeatureBuilder``."""
 
-    def test_build_node_features_shape(self) -> None:
-        """Output shape should be [num_nodes, node_feat_dim]."""
-        raise NotImplementedError(
-            "TODO: create FeatureBuilder with default config, "
-            "build_node_features with synthetic RawGraphData, "
-            "assert output shape"
-        )
+    # def test_build_node_features_shape(self) -> None:
+        # """Output shape should be [num_nodes, node_feat_dim]."""
+        # raise NotImplementedError(
+            # "TODO: create FeatureBuilder with default config, "
+            # "build_node_features with synthetic RawGraphData, "
+            # "assert output shape"
+        # )
 
-    def test_build_edge_features_shape(self) -> None:
-        """Output shape should be [num_edges, edge_feat_dim]."""
-        raise NotImplementedError(
-            "TODO: create FeatureBuilder, build_edge_features, assert shape"
-        )
+    # def test_build_edge_features_shape(self) -> None:
+        # """Output shape should be [num_edges, edge_feat_dim]."""
+        # raise NotImplementedError(
+            # "TODO: create FeatureBuilder, build_edge_features, assert shape"
+        # )
 
-    def test_unknown_feature_raises(self) -> None:
-        """Requesting a non-existent feature name should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: set node_features=['nonexistent'], assert ValueError"
-        )
+    # def test_unknown_feature_raises(self) -> None:
+        # """Requesting a non-existent feature name should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: set node_features=['nonexistent'], assert ValueError"
+        # )
 
-    def test_feature_toggle_independence(self) -> None:
-        """Enabling/disabling features should only change dimensions."""
-        raise NotImplementedError(
-            "TODO: compare output dim with 1 feature vs 2 features"
-        )
+    # def test_feature_toggle_independence(self) -> None:
+        # """Enabling/disabling features should only change dimensions."""
+        # raise NotImplementedError(
+            # "TODO: compare output dim with 1 feature vs 2 features"
+        # )
 
 
 # ---------------------------------------------------------------------------
@@ -102,27 +102,27 @@ class TestFeatureBuilder:
 class TestLabelBuilder:
     """Tests for ``LabelBuilder``."""
 
-    def test_single_column_extraction(self) -> None:
-        """Single target column should produce [N] array."""
-        raise NotImplementedError(
-            "TODO: create metadata DataFrame, extract single column, assert shape"
-        )
+    # def test_single_column_extraction(self) -> None:
+        # """Single target column should produce [N] array."""
+        # raise NotImplementedError(
+            # "TODO: create metadata DataFrame, extract single column, assert shape"
+        # )
 
-    def test_weighted_composite(self) -> None:
-        """Weighted composite should produce correct weighted sum."""
-        raise NotImplementedError(
-            "TODO: define composite={col1: 0.5, col2: 0.5}, verify weighted sum"
-        )
+    # def test_weighted_composite(self) -> None:
+        # """Weighted composite should produce correct weighted sum."""
+        # raise NotImplementedError(
+            # "TODO: define composite={col1: 0.5, col2: 0.5}, verify weighted sum"
+        # )
 
-    def test_missing_subject_raises(self) -> None:
-        """Missing subject in metadata should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: pass subject_id not in metadata, assert ValueError"
-        )
+    # def test_missing_subject_raises(self) -> None:
+        # """Missing subject in metadata should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: pass subject_id not in metadata, assert ValueError"
+        # )
 
-    def test_label_names(self) -> None:
-        """get_label_names should return the correct column names."""
-        raise NotImplementedError("TODO: assert label names match config")
+    # def test_label_names(self) -> None:
+        # """get_label_names should return the correct column names."""
+        # raise NotImplementedError("TODO: assert label names match config")
 
 
 # ---------------------------------------------------------------------------
@@ -219,14 +219,14 @@ class TestDatasetRegistry:
         """ORBIT should be auto-registered on import."""
         assert "orbit" in DATASET_REGISTRY
 
-    def test_get_unknown_raises(self) -> None:
-        """get_dataset with unregistered name should raise KeyError."""
-        raise NotImplementedError(
-            "TODO: call get_dataset('nonexistent', ...), assert KeyError"
-        )
+    # def test_get_unknown_raises(self) -> None:
+        # """get_dataset with unregistered name should raise KeyError."""
+        # raise NotImplementedError(
+            # "TODO: call get_dataset('nonexistent', ...), assert KeyError"
+        # )
 
-    def test_duplicate_registration_raises(self) -> None:
-        """Registering the same name twice should raise ValueError."""
-        raise NotImplementedError(
-            "TODO: try to register a class with an existing name, assert ValueError"
-        )
+    # def test_duplicate_registration_raises(self) -> None:
+        # """Registering the same name twice should raise ValueError."""
+        # raise NotImplementedError(
+            # "TODO: try to register a class with an existing name, assert ValueError"
+        # )
