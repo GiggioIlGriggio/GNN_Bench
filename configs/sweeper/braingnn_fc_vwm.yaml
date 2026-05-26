@@ -38,5 +38,6 @@ params:
   model.model_params.roi_embed_dim: choice(4, 8, 16, 32)
 
   # Auxiliary loss weights (encourage diverse node selection and consistency)
-  model.model_params.unit_loss_weight: interval(0.0, 1.0)
-  model.model_params.topk_loss_weight: interval(0.0, 1.0)
+  model.model_params.lambda_topk: interval(0.0, 1.0)
+  model.model_params.lambda_unit: interval(0.0, 1.0)
+  model.model_params.lambda_consist: interval(0.0, 1.0)

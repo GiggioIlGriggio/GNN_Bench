@@ -14,5 +14,6 @@ params:
   model.dropout: interval(0.0, 0.2)
   model.model_params.pool_ratio: interval(0.3, 0.8)
   model.model_params.roi_embed_dim: choice(4, 8, 16, 32)
-  model.model_params.unit_loss_weight: interval(0.0, 1.0)
-  model.model_params.topk_loss_weight: interval(0.0, 1.0)
+  model.model_params.lambda_topk: interval(0.0, 1.0)
+  model.model_params.lambda_unit: interval(0.0, 1.0)
+  model.model_params.lambda_consist: interval(0.0, 1.0)
