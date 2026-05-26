@@ -116,6 +116,7 @@ def test_trainer_passes_epoch_to_fold_metric_logs(monkeypatch: pytest.MonkeyPatc
             0.1,
             np.array([1.0, 2.0], dtype=np.float32),
             np.array([1.0, 2.0], dtype=np.float32),
+            {},
         ),
     )
     monkeypatch.setattr(trainer, "_build_scheduler", lambda _optimizer: None)
