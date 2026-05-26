@@ -13,7 +13,6 @@ trees so they avoid real training time. ``GNNExplainer`` is configured with
 from __future__ import annotations
 
 import json
-import pickle
 from dataclasses import asdict
 from pathlib import Path
 from typing import List, Tuple
@@ -28,7 +27,6 @@ from src.configs.model_config import ModelConfig
 from src.configs.trainer_config import TrainerConfig
 from src.gnn_explainer.explainer import GNNExplainerRunner
 from src.models.registry import get_model
-from src.training.label_normalizer import LabelNormalizer
 
 
 # ---------------------------------------------------------------------------
@@ -109,16 +107,19 @@ def _model_factory(feat_dim: int = 3, num_nodes: int = 6):
 def _write_fold_artifacts(
     fold_dir: Path,
     model: torch.nn.Module,
-    normalizer: LabelNormalizer,
     model_cfg: ModelConfig,
     feature_cfg: dict,
 ) -> None:
-    """Write the on-disk files CheckpointManager.load_model_for_fold expects."""
+    """Write the on-disk files CheckpointManager.load_model_for_fold expects.
+
+    The Explainer's GLM re-fit branch (current PR1 state) does not consume
+    a persisted leakage barrier, so ``barrier.pt`` is not synthesised
+    here — ``load_model_for_fold`` returns ``barrier=None`` and the
+    explainer test path tolerates it.
+    """
     fold_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), fold_dir / "model_best.pt")
     torch.save(model.state_dict(), fold_dir / "model_last.pt")
-    with open(fold_dir / "normalizer.pkl", "wb") as f:
-        pickle.dump(normalizer, f)
     with open(fold_dir / "model_config.json", "w") as f:
         json.dump(model_cfg.model_dump(), f)
     with open(fold_dir / "feature_config.json", "w") as f:
@@ -162,10 +163,8 @@ def _build_nested_checkpoint_tree(
             skf.split(np.arange(len(labels)), bins)
         ):
             fold_dir = ckpt_root / f"rep_{rep}" / f"fold_{fold_idx}"
-            normalizer = LabelNormalizer(strategy="standard")
-            normalizer.fit(labels)
             _write_fold_artifacts(
-                fold_dir, factory(), normalizer, model_cfg, feature_cfg
+                fold_dir, factory(), model_cfg, feature_cfg
             )
 
     nested_payload = {
@@ -191,7 +190,6 @@ def _build_legacy_checkpoint_tree(
     n_folds: int,
     feat_dim: int = 3,
     num_nodes: int = 6,
-    labels: np.ndarray,
 ) -> None:
     """Fabricate the legacy ``fold_<K>/`` layout (no rep dirs, no nested json)."""
     model_cfg = _make_model_cfg(feat_dim)
@@ -200,10 +198,8 @@ def _build_legacy_checkpoint_tree(
 
     for fold_idx in range(n_folds):
         fold_dir = ckpt_root / f"fold_{fold_idx}"
-        normalizer = LabelNormalizer(strategy="standard")
-        normalizer.fit(labels)
         _write_fold_artifacts(
-            fold_dir, factory(), normalizer, model_cfg, feature_cfg
+            fold_dir, factory(), model_cfg, feature_cfg
         )
 
 
@@ -385,7 +381,7 @@ class TestLegacyLayoutFallback:
         ckpt_root = tmp_path / "ckpt"
         ckpt_root.mkdir()
         _build_legacy_checkpoint_tree(
-            ckpt_root, n_folds=3, num_nodes=6, labels=labels,
+            ckpt_root, n_folds=3, num_nodes=6,
         )
 
         # Legacy CrossValidator needs n_folds set; nested fields stay at default.

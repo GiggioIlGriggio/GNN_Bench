@@ -20,7 +20,6 @@ from src.datasets.label_builder import LabelBuilder
 from src.interfaces.adapters import load_partial_state_dict
 from src.models.base_model import BrainGNN
 from src.models.registry import get_model
-from src.training.label_normalizer import LabelNormalizer
 
 log = logging.getLogger(__name__)
 

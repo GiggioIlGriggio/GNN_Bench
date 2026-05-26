@@ -106,6 +106,42 @@ class LabelNormalizer:
         self.fit(y_train)
         return self.transform(y_train)
 
+    # ------------------------------------------------------------------
+    # State-dict interface (composes into FoldBarrier)
+    # ------------------------------------------------------------------
+
+    def state_dict(self) -> dict:
+        """Return fitted state as a plain dict, suitable for ``torch.save``.
+
+        Returns
+        -------
+        dict
+        """
+        return {
+            "strategy": self.strategy,
+            "mean": self._mean,
+            "std": self._std,
+            "median": self._median,
+            "iqr": self._iqr,
+            "min": self._min,
+            "max": self._max,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore fitted state from ``state_dict``.
+
+        Parameters
+        ----------
+        state : dict
+        """
+        self.strategy = state["strategy"]
+        self._mean = state.get("mean")
+        self._std = state.get("std")
+        self._median = state.get("median")
+        self._iqr = state.get("iqr")
+        self._min = state.get("min")
+        self._max = state.get("max")
+
     def save(self, path: Path) -> None:
         """Serialise normaliser state to disk.
 

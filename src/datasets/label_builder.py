@@ -220,6 +220,61 @@ class LabelBuilder:
         return self.transform(components)
 
     # ------------------------------------------------------------------
+    # State-dict interface (composes into FoldBarrier)
+    # ------------------------------------------------------------------
+
+    def state_dict(self) -> dict:
+        """Return fitted state as a plain dict for ``torch.save``.
+
+        Returns
+        -------
+        dict
+        """
+        return {
+            "label_names": list(self._label_names),
+            "component_means": (
+                self._component_means.tolist()
+                if self._component_means is not None
+                else None
+            ),
+            "component_stds": (
+                self._component_stds.tolist()
+                if self._component_stds is not None
+                else None
+            ),
+            "composite_state": (
+                self._composite_op.state_dict()
+                if self._composite_op is not None
+                and hasattr(self._composite_op, "state_dict")
+                else None
+            ),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore fitted state from ``state_dict``.
+
+        Parameters
+        ----------
+        state : dict
+        """
+        self._label_names = list(state.get("label_names", []))
+        cm = state.get("component_means")
+        cs = state.get("component_stds")
+        self._component_means = (
+            np.asarray(cm, dtype=float) if cm is not None else None
+        )
+        self._component_stds = (
+            np.asarray(cs, dtype=float) if cs is not None else None
+        )
+        cop_state = state.get("composite_state")
+        if (
+            cop_state is not None
+            and self._composite_op is not None
+            and hasattr(self._composite_op, "load_state_dict")
+        ):
+            self._composite_op.load_state_dict(cop_state)
+
+    # ------------------------------------------------------------------
     # One-shot API (backward-compatible, safe for single-column targets)
     # ------------------------------------------------------------------
 

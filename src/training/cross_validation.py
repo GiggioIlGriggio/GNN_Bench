@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterator, List, Optional, Tuple
@@ -18,8 +17,7 @@ from src.configs.trainer_config import TrainerConfig
 from src.datasets.label_builder import LabelBuilder
 from src.models.base_model import BrainGNN
 from src.training.checkpoint_manager import CheckpointManager
-from src.training.glm_normalizer import GLMFeatureNormalizer
-from src.training.label_normalizer import LabelNormalizer
+from src.training.fold_barrier import FoldBarrier
 from src.training.metrics import MetricDict, compute_metrics
 from src.training.trainer import Trainer, TrainResult
 
@@ -128,25 +126,19 @@ class CrossValidator:
 
         For each fold:
         1. Split data into train / val / test indices.
-        2. Build per-fold labels:
-           - **Simple mode** (``label_builder`` is ``None``): slice the
-             pre-computed ``labels`` array directly.
-           - **Composite mode** (both ``label_builder`` and
-             ``label_components`` are provided): call
-             ``label_builder.fit_transform(label_components.iloc[train_idx])``
-             to fit normalisation / PCA on training subjects only, then
-             ``label_builder.transform(...)`` for val and test.  This
-             prevents leakage from component normalisation or PCA fitting.
-        3. If ``glm_col_range`` is provided, z-score the GLM feature
-           columns of ``data.x`` per node — fit on train only.
-        4. Fit :class:`~src.training.label_normalizer.LabelNormalizer` on
-           the (per-fold) training labels to map them to a normalised scale.
-        5. Create fresh model via ``model_factory``.
-        6. Build DataLoaders and attach per-fold labels to each graph's
+        2. Construct a :class:`~src.training.fold_barrier.FoldBarrier`
+           that owns the three per-fold leakage protections (composite
+           ``LabelBuilder`` if configured, ``LabelNormalizer``, and
+           ``GLMFeatureNormalizer`` if ``glm_col_range`` is set),
+           fitted on the training pool only (ADR-0009).
+        3. Apply ``barrier.transform_labels`` to train / val / test
+           labels and ``barrier.transform_graphs`` to the graphs.
+        4. Create fresh model via ``model_factory``.
+        5. Build DataLoaders and attach per-fold labels to each graph's
            ``data.y``.
-        7. Train via ``trainer.fit``.
-        8. Reload the best validation weights and evaluate them on the test split.
-        9. Save checkpoint via ``CheckpointManager``.
+        6. Train via ``trainer.fit`` (passing ``barrier.inverse_transform_labels``).
+        7. Reload the best validation weights and evaluate them on the test split.
+        8. Save checkpoint via ``CheckpointManager`` (writes ``barrier.pt``).
 
         Parameters
         ----------
@@ -234,74 +226,57 @@ class CrossValidator:
             test_ids  = _get_subject_ids(test_idx)
 
             # ------------------------------------------------------------------
-            # Build per-fold labels
+            # Per-fold leakage barrier (ADR-0009): one fitted bundle of
+            # composite-label + label-norm + GLM transformers, fit on train.
             # ------------------------------------------------------------------
-            if label_builder is not None:
-                y_train = label_builder.fit_transform(
-                    label_components.iloc[train_idx]
-                )
-                y_val = label_builder.transform(label_components.iloc[val_idx])
-                y_test = label_builder.transform(label_components.iloc[test_idx])
+            barrier = FoldBarrier(
+                label_norm_strategy=self.cfg.label_norm_strategy,
+                glm_col_range=glm_col_range,
+                glm_normalize=glm_normalize,
+                label_builder=label_builder,
+            )
+
+            train_graphs_raw = [dataset[i] for i in train_idx]
+            if label_builder is not None and label_components is not None:
+                barrier.fit(train_graphs_raw, label_components.iloc[train_idx])
+                y_train_norm = barrier.transform_labels(label_components.iloc[train_idx])
+                y_val_norm = barrier.transform_labels(label_components.iloc[val_idx])
+                y_test_norm = barrier.transform_labels(label_components.iloc[test_idx])
             else:
-                y_train = labels[train_idx]
-                y_val = labels[val_idx]
-                y_test = labels[test_idx]
+                barrier.fit(train_graphs_raw, labels[train_idx])
+                y_train_norm = barrier.transform_labels(labels[train_idx])
+                y_val_norm = barrier.transform_labels(labels[val_idx])
+                y_test_norm = barrier.transform_labels(labels[test_idx])
 
-            # ------------------------------------------------------------------
-            # Normalise labels (fit on train only)
-            # ------------------------------------------------------------------
-            normalizer = LabelNormalizer(strategy=self.cfg.label_norm_strategy)
-            y_train_norm = normalizer.fit_transform(y_train)
-            y_val_norm = normalizer.transform(y_val)
-            y_test_norm = normalizer.transform(y_test)
+            train_graphs = barrier.transform_graphs(train_graphs_raw)
+            val_graphs = barrier.transform_graphs([dataset[i] for i in val_idx])
+            test_graphs = barrier.transform_graphs([dataset[i] for i in test_idx])
 
-            # ------------------------------------------------------------------
-            # Build DataLoaders with labels attached to each graph
-            # ------------------------------------------------------------------
             bs = self.cfg.batch_size
 
             def _make_loader(
-                indices: List[int],
+                graphs_list: List[torch_geometric.data.Data],
                 y_values: np.ndarray,
                 shuffle: bool,
                 drop_last: bool = False,
             ) -> DataLoader:
-                graphs = []
-                for i, idx in enumerate(indices):
-                    g = copy.copy(dataset[idx])
+                for i, g in enumerate(graphs_list):
                     g.y = torch.tensor([y_values[i]], dtype=torch.float32)
-                    graphs.append(g)
                 return DataLoader(
-                    graphs,
+                    graphs_list,
                     batch_size=bs,
                     shuffle=shuffle,
                     drop_last=drop_last,
                 )
 
             train_loader = _make_loader(
-                train_idx, y_train_norm, shuffle=True,
+                train_graphs, y_train_norm, shuffle=True,
                 drop_last=len(train_idx) > bs,
             )
-            val_loader = _make_loader(val_idx, y_val_norm, shuffle=False)
-            test_loader = _make_loader(test_idx, y_test_norm, shuffle=False)
+            val_loader = _make_loader(val_graphs, y_val_norm, shuffle=False)
+            test_loader = _make_loader(test_graphs, y_test_norm, shuffle=False)
 
-            # ------------------------------------------------------------------
-            # GLM feature normalisation (fit on train only)
-            # ------------------------------------------------------------------
-            if glm_col_range is not None and glm_normalize:
-                col_start, col_end = glm_col_range
-                glm_norm = GLMFeatureNormalizer(col_start, col_end)
-                # Collect the train graphs from the loader to fit stats
-                train_graphs = [g for g in train_loader.dataset]
-                glm_norm.fit(train_graphs)
-                glm_norm.transform(train_graphs)
-                # Apply same stats to val and test graphs
-                val_graphs = [g for g in val_loader.dataset]
-                glm_norm.transform(val_graphs)
-                test_graphs = [g for g in test_loader.dataset]
-                glm_norm.transform(test_graphs)
 
-                
             # ------------------------------------------------------------------
             # Train and evaluate
             # ------------------------------------------------------------------
@@ -327,18 +302,19 @@ class CrossValidator:
                     return _callback
                 epoch_end_callback = _make_epoch_callback(fold_idx)
 
+            inv = barrier.inverse_transform_labels
             result = trainer.fit(
-                model, train_loader, val_loader, normalizer, fold_idx,
+                model, train_loader, val_loader, inv, fold_idx,
                 on_epoch_end_callback=epoch_end_callback,
             )
 
             # Evaluate the checkpoint selected by validation, not the final in-memory weights.
             model.load_state_dict(result.best_model_state_dict)
 
-            y_true_fold, y_pred_fold = trainer.predict(model, test_loader, normalizer)
+            y_true_fold, y_pred_fold = trainer.predict(model, test_loader, inv)
             all_y_true.append(y_true_fold)
             all_y_pred.append(y_pred_fold)
-            test_metrics = trainer.evaluate(model, test_loader, normalizer, "test")
+            test_metrics = trainer.evaluate(model, test_loader, inv, "test")
 
             try:
                 trainer.logger.log_prediction_scatter(y_true_fold, y_pred_fold, fold_idx)
@@ -388,7 +364,7 @@ class CrossValidator:
                     fold_idx,
                     result.best_model_state_dict,
                     result.last_model_state_dict,
-                    normalizer,
+                    barrier,
                     result.best_val_metrics,
                     result.best_epoch,
                     result.last_val_metrics,

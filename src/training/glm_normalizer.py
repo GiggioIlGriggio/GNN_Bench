@@ -140,3 +140,35 @@ class GLMFeatureNormalizer:
         """
         self.fit(graphs)
         self.transform(graphs)
+
+    # ------------------------------------------------------------------
+    # State-dict interface (composes into FoldBarrier)
+    # ------------------------------------------------------------------
+
+    def state_dict(self) -> dict:
+        """Return fitted state as a plain dict for ``torch.save``.
+
+        Returns
+        -------
+        dict
+        """
+        return {
+            "col_start": self.col_start,
+            "col_end": self.col_end,
+            "fitted": self._fitted,
+            "mean": self.mean_.detach().clone() if self.mean_ is not None else None,
+            "std": self.std_.detach().clone() if self.std_ is not None else None,
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        """Restore fitted state from ``state_dict``.
+
+        Parameters
+        ----------
+        state : dict
+        """
+        self.col_start = int(state["col_start"])
+        self.col_end = int(state["col_end"])
+        self._fitted = bool(state["fitted"])
+        self.mean_ = state["mean"]
+        self.std_ = state["std"]
