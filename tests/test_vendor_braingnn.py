@@ -223,3 +223,42 @@ class TestSigmoidComposition:
         L = torch.eye(5) * W.sum(1) - W
         no_sigmoid = float(torch.trace(ss.t() @ L @ ss) / 25)
         assert abs(with_sigmoid - no_sigmoid) > 1e-6
+
+
+from src.models.heads.regression_head import RegressionHead
+
+
+class TestHeadBatchNorm:
+    """Upstream BrainGNN's FC head applies BatchNorm after each hidden layer
+    (net/braingnn.py: ``self.bn1(F.relu(self.fc1(x)))`` ...). The faithful
+    adapter must reproduce that. The repo's generic RegressionHead omits BN by
+    default (so the GCN/GAT/GIN/MLP models that share it are unaffected), so
+    BrainGNN opts in explicitly."""
+
+    def _cfg(self, head_hidden_dim=32, head_num_layers=2):
+        return ModelConfig(
+            name="braingnn", hidden_dim=16, dropout=0.0,
+            head_hidden_dim=head_hidden_dim, head_num_layers=head_num_layers,
+        )
+
+    def test_regression_head_batchnorm_is_opt_in(self) -> None:
+        cfg = self._cfg(head_num_layers=2)
+        default_head = RegressionHead(cfg, embedding_dim=64)
+        assert [m for m in default_head.modules()
+                if isinstance(m, nn.BatchNorm1d)] == []
+
+        bn_head = RegressionHead(cfg, embedding_dim=64, batchnorm=True)
+        bns = [m for m in bn_head.modules() if isinstance(m, nn.BatchNorm1d)]
+        assert len(bns) == cfg.head_num_layers
+        assert all(bn.num_features == cfg.head_hidden_dim for bn in bns)
+
+    def test_regression_head_batchnorm_follows_relu(self) -> None:
+        head = RegressionHead(self._cfg(head_hidden_dim=8, head_num_layers=1),
+                              embedding_dim=12, batchnorm=True)
+        kinds = [type(m).__name__ for m in head.layers]
+        assert kinds == ["Linear", "ReLU", "BatchNorm1d", "Dropout", "Linear"]
+
+    def test_braingnn_head_has_batchnorm(self) -> None:
+        model = _make_adapter(hidden_dim=16)
+        bns = [m for m in model.head.modules() if isinstance(m, nn.BatchNorm1d)]
+        assert len(bns) >= 1

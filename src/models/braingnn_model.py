@@ -93,7 +93,9 @@ class BrainGNNModel(BrainGNN):
             hidden, ratio=self.pool_ratio, multiplier=1, nonlinearity=torch.sigmoid
         )
 
-        self.head = RegressionHead(cfg, embedding_dim=hidden * 4)
+        # batchnorm=True restores the upstream head's BN (net/braingnn.py bn1/bn2),
+        # which the generic RegressionHead omits by default.
+        self.head = RegressionHead(cfg, embedding_dim=hidden * 4, batchnorm=True)
 
         # Aux-loss tensors stashed during the last encode().
         self._s1: Optional[torch.Tensor] = None
