@@ -18,9 +18,15 @@ class RegressionHead(PredictionHead):
         Must provide ``head_hidden_dim``, ``head_num_layers``, ``dropout``.
     embedding_dim : int
         Dimensionality of the input graph embedding.
+    batchnorm : bool
+        Insert ``BatchNorm1d`` after the ReLU of each hidden layer. Off by
+        default; BrainGNN opts in to stay faithful to the upstream FC head
+        (``bn(relu(fc(x)))``).
     """
 
-    def __init__(self, cfg: ModelConfig, embedding_dim: int) -> None:
+    def __init__(
+        self, cfg: ModelConfig, embedding_dim: int, batchnorm: bool = False
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         self.embedding_dim = embedding_dim
@@ -30,6 +36,8 @@ class RegressionHead(PredictionHead):
         for _ in range(cfg.head_num_layers):
             layers.append(nn.Linear(in_dim, cfg.head_hidden_dim))
             layers.append(nn.ReLU())
+            if batchnorm:
+                layers.append(nn.BatchNorm1d(cfg.head_hidden_dim))
             layers.append(nn.Dropout(p=cfg.dropout))
             in_dim = cfg.head_hidden_dim
         layers.append(nn.Linear(in_dim, 1))
