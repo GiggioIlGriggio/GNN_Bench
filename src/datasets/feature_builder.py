@@ -332,6 +332,45 @@ class FeatureBuilder:
     # GLM map node feature methods
     # ------------------------------------------------------------------
 
+    def _node_feat_laplacian_pe(self, graph_data: RawGraphData) -> torch.Tensor:
+        """Laplacian positional encoding: k eigenvectors of the smallest
+        non-zero eigenvalues of the symmetric normalized Laplacian.
+
+        Computed on the binarized adjacency. ``k = cfg.laplacian_pe_dim``.
+        Returns ``[N, k]``. Build-time signs are the deterministic
+        ``numpy.linalg.eigh`` output; sign-flip augmentation is applied at
+        train time by the Trainer (eigenvector signs are arbitrary).
+
+        Raises
+        ------
+        ValueError
+            If the binarized graph is fully dense (constant PE) or
+            disconnected (multiple zero eigenvalues corrupt the selection).
+        """
+        A = self._binary_adjacency(graph_data)
+        N = graph_data.num_nodes
+        k = self.cfg.laplacian_pe_dim
+        self._check_sparse(A, N, "laplacian_pe")
+
+        deg = A.sum(dim=1)
+        d_inv_sqrt = deg.clamp(min=1.0).pow(-0.5)
+        L = torch.eye(N) - d_inv_sqrt.unsqueeze(1) * A * d_inv_sqrt.unsqueeze(0)
+
+        eigvals, eigvecs = np.linalg.eigh(L.numpy())  # ascending order
+        num_zero = int((eigvals < 1e-6).sum())  # multiplicity of 0 = #components
+        if num_zero > 1:
+            raise ValueError(
+                f"'laplacian_pe' requires a connected graph but found "
+                f"{num_zero} connected components (zero eigenvalues). "
+                "Tighten dataset.edge_threshold_value or check the data."
+            )
+
+        pe = torch.from_numpy(eigvecs[:, 1:k + 1]).float()  # skip trivial
+        if pe.shape[1] < k:  # tiny graph: pad missing eigenvectors with zeros
+            pad = torch.zeros(N, k - pe.shape[1], dtype=torch.float32)
+            pe = torch.cat([pe, pad], dim=-1)
+        return pe
+
     def _node_feat_glm_scalar(self, graph_data: RawGraphData) -> torch.Tensor:
         """Per-node GLM activation value (scalar per contrast).
 

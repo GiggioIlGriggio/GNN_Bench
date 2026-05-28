@@ -323,3 +323,72 @@ class TestCycleCountsFeature:
         fb = FeatureBuilder(cfg)
         with pytest.raises(ValueError, match="dense"):
             fb.build_node_features(g)
+
+
+# ---------------------------------------------------------------------------
+# laplacian_pe node feature
+# ---------------------------------------------------------------------------
+
+class TestLaplacianPEFeature:
+    """Tests for _node_feat_laplacian_pe."""
+
+    def _sparse_connected(self, N: int = 4):
+        # Triangle {0,1,2} + edge 0-3: connected, sparse.
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        edge_index = torch.stack([src, dst], dim=0)
+        return RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.randn(edge_index.shape[1], 1), num_nodes=N,
+        )
+
+    def _cfg(self, k: int):
+        return FeatureConfig(
+            node_features=["laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=k, edge_feat_dim=1, laplacian_pe_dim=k,
+        )
+
+    def test_shape_and_determinism(self) -> None:
+        fb = FeatureBuilder(self._cfg(2))
+        g = self._sparse_connected()
+        out1 = fb.build_node_features(g)
+        out2 = fb.build_node_features(g)
+        assert out1.shape == (4, 2)
+        assert out1.dtype == torch.float32
+        assert torch.allclose(out1, out2)  # eigh is deterministic per matrix
+
+    def test_binarization_ignores_weights(self) -> None:
+        fb = FeatureBuilder(self._cfg(2))
+        g = self._sparse_connected()
+        out_a = fb.build_node_features(g)
+        g2 = RawGraphData(
+            subject_id="sub-001", sc_edge_index=g.sc_edge_index,
+            sc_edge_attr=g.sc_edge_attr * 13.0 - 4.0, num_nodes=4,
+        )
+        out_b = fb.build_node_features(g2)
+        assert torch.allclose(out_a, out_b)
+
+    def test_raises_on_dense(self) -> None:
+        N = 4
+        src, dst = [], []
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    src.append(i); dst.append(j)
+        g = RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=torch.tensor([src, dst], dtype=torch.int64),
+            sc_edge_attr=torch.ones(len(src), 1), num_nodes=N,
+        )
+        with pytest.raises(ValueError, match="dense"):
+            FeatureBuilder(self._cfg(2)).build_node_features(g)
+
+    def test_raises_on_disconnected(self) -> None:
+        # Two disjoint edges: 0-1 and 2-3 -> 2 components.
+        edge_index = torch.tensor([[0, 2], [1, 3]], dtype=torch.int64)
+        g = RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.ones(2, 1), num_nodes=4,
+        )
+        with pytest.raises(ValueError, match="connected"):
+            FeatureBuilder(self._cfg(2)).build_node_features(g)
