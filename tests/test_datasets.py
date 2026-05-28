@@ -251,3 +251,75 @@ class TestDatasetRegistry:
         # raise NotImplementedError(
             # "TODO: try to register a class with an existing name, assert ValueError"
         # )
+
+
+# ---------------------------------------------------------------------------
+# cycle_counts node feature
+# ---------------------------------------------------------------------------
+
+class TestCycleCountsFeature:
+    """Tests for _node_feat_cycle_counts (ID-GNN-Fast identity features)."""
+
+    def _sparse_triangle_plus_tail(self, N: int = 4):
+        # Triangle on {0,1,2} + edge 0-3. Sparse (not complete), connected.
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        edge_index = torch.stack([src, dst], dim=0)
+        edge_attr = torch.randn(edge_index.shape[1], 1)
+        return RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=edge_index,
+            sc_edge_attr=edge_attr,
+            num_nodes=N,
+        )
+
+    def test_shape_and_values(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        out = fb.build_node_features(self._sparse_triangle_plus_tail())
+        assert out.shape == (4, 2)  # l in {2,3} -> width 2
+        # A^2 diag = degree = [3,2,2,1]; A^3 diag = 2*triangles = [2,2,2,0]
+        expected = torch.log1p(torch.tensor(
+            [[3.0, 2.0], [2.0, 2.0], [2.0, 2.0], [1.0, 0.0]]
+        ))
+        assert torch.allclose(out, expected, atol=1e-5)
+
+    def test_binarization_ignores_weights(self) -> None:
+        # Same topology, different (and negative) weights -> identical counts.
+        g = self._sparse_triangle_plus_tail()
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        out_a = fb.build_node_features(g)
+        g2 = RawGraphData(
+            subject_id="sub-001", sc_edge_index=g.sc_edge_index,
+            sc_edge_attr=g.sc_edge_attr * -7.0 + 3.0, num_nodes=4,
+        )
+        out_b = fb.build_node_features(g2)
+        assert torch.allclose(out_a, out_b)
+
+    def test_raises_on_fully_dense(self) -> None:
+        # Complete graph K4 -> binarized A all-ones off-diagonal.
+        N = 4
+        src, dst = [], []
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    src.append(i); dst.append(j)
+        edge_index = torch.tensor([src, dst], dtype=torch.int64)
+        g = RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.ones(edge_index.shape[1], 1), num_nodes=N,
+        )
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        with pytest.raises(ValueError, match="dense"):
+            fb.build_node_features(g)

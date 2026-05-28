@@ -305,6 +305,29 @@ class FeatureBuilder:
             edge_attr=graph_data.sc_edge_attr,
         )
 
+    def _node_feat_cycle_counts(self, graph_data: RawGraphData) -> torch.Tensor:
+        """ID-GNN-Fast cycle counts: log1p of [A^l]_vv for l = 2..L.
+
+        Computed on the binarized adjacency. ``L = cfg.cycle_max_length``.
+        Returns ``[N, L-1]``. l=1 is omitted (always 0 without self-loops).
+
+        Raises
+        ------
+        ValueError
+            If the binarized graph is fully dense (counts identical -> useless).
+        """
+        A = self._binary_adjacency(graph_data)
+        N = graph_data.num_nodes
+        self._check_sparse(A, N, "cycle_counts")
+        L = self.cfg.cycle_max_length
+        cols: List[torch.Tensor] = []
+        A_power = A.clone()           # A^1
+        for _ in range(2, L + 1):
+            A_power = A_power @ A      # A^l
+            cols.append(torch.diagonal(A_power))
+        counts = torch.stack(cols, dim=-1)  # [N, L-1]
+        return torch.log1p(counts)
+
     # ------------------------------------------------------------------
     # GLM map node feature methods
     # ------------------------------------------------------------------
@@ -447,6 +470,35 @@ class FeatureBuilder:
                 parts.append(diag)
 
         return torch.cat(parts, dim=-1)
+
+    def _binary_adjacency(self, graph_data: RawGraphData) -> torch.Tensor:
+        """Dense 0/1 symmetric adjacency (no self-loops) from primary edges.
+
+        Used **only** by topology-derived features (laplacian_pe, cycle_counts);
+        the graph's weighted edge_attr is untouched everywhere else.
+        """
+        edge_index, _ = self._get_primary_edges(graph_data)
+        N = graph_data.num_nodes
+        A = torch.zeros(N, N, dtype=torch.float32)
+        if edge_index is None or edge_index.shape[1] == 0:
+            return A
+        src, dst = edge_index[0], edge_index[1]
+        A[src, dst] = 1.0
+        A[dst, src] = 1.0
+        A.fill_diagonal_(0.0)
+        return A
+
+    def _check_sparse(self, A: torch.Tensor, N: int, feature: str) -> None:
+        """Raise if the binarized adjacency is fully dense (constant feature)."""
+        if N <= 1:
+            return
+        off_diag_frac = A.sum() / float(N * (N - 1))
+        if torch.isclose(off_diag_frac, torch.tensor(1.0)):
+            raise ValueError(
+                f"'{feature}' requires a thresholded (sparse) graph: the "
+                f"binarized adjacency is fully dense, so the feature is "
+                f"constant/uninformative. Set dataset.edge_threshold_mode."
+            )
 
     def _connectivity_profile(
         self,
