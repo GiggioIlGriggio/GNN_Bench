@@ -36,6 +36,7 @@ class FeatureBuilder:
         self._edge_feat_registry: Dict[str, Callable[..., torch.Tensor]] = (
             self._discover_methods("_edge_feat_")
         )
+        self._col_ranges: Dict[str, tuple[int, int]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,26 +61,26 @@ class FeatureBuilder:
             If a requested feature name has no matching method.
         """
         feats = []
+        self._col_ranges = {}
+        offset = 0
         for name in self.cfg.node_features:
             if name not in self._node_feat_registry:
                 raise ValueError(
                     f"Unknown node feature '{name}'. "
                     f"Available: {list(self._node_feat_registry.keys())}"
                 )
-            feats.append(self._node_feat_registry[name](graph_data))
+            t = self._node_feat_registry[name](graph_data)
+            self._col_ranges[name] = (offset, offset + t.shape[-1])
+            offset += t.shape[-1]
+            feats.append(t)
         result = torch.cat(feats, dim=-1)
 
-        # Validate node_feat_dim for features whose width equals num_nodes.
-        _NODE_SIZED_FEATURES = {"identity", "fc_row", "sc_row"}
-        if any(name in _NODE_SIZED_FEATURES for name in self.cfg.node_features):
-            actual_dim = result.shape[-1]
-            if actual_dim != self.cfg.node_feat_dim:
-                raise ValueError(
-                    f"node_feat_dim mismatch: config says {self.cfg.node_feat_dim} "
-                    f"but actual feature dim is {actual_dim}. "
-                    f"node_feat_dim must match num_nodes for features: "
-                    f"{_NODE_SIZED_FEATURES & set(self.cfg.node_features)}."
-                )
+        if result.shape[-1] != self.cfg.node_feat_dim:
+            raise ValueError(
+                f"node_feat_dim mismatch: config says {self.cfg.node_feat_dim} "
+                f"but actual feature dim is {result.shape[-1]}. Per-feature "
+                f"widths: { {k: v[1] - v[0] for k, v in self._col_ranges.items()} }."
+            )
 
         return result
 
@@ -119,63 +120,37 @@ class FeatureBuilder:
         """Return the total edge feature dimensionality."""
         return self.cfg.edge_feat_dim
 
-    def get_glm_column_range(self) -> tuple[int, int] | None:
-        """Return the ``(start, end)`` column range of GLM features in ``data.x``.
+    def get_column_range(self, feature_name: str) -> tuple[int, int] | None:
+        """Return the (start, end) column range of a feature in ``data.x``.
 
-        Scans ``cfg.node_features`` in order and sums the per-feature
-        dimensionality to locate where GLM columns begin and end.
-
-        Returns
-        -------
-        tuple[int, int] | None
-            ``(col_start, col_end)`` with ``col_end`` exclusive, or ``None``
-            if no GLM features are enabled.
+        Populated by the most recent :meth:`build_node_features` call. Returns
+        ``None`` if the feature is not enabled. Call ``build_node_features``
+        on at least one graph before querying.
         """
-        glm_names = {"glm_scalar", "glm_diagonal"}
-        enabled_glm = [f for f in self.cfg.node_features if f in glm_names]
-        if not enabled_glm:
+        return self._col_ranges.get(feature_name)
+
+    def get_laplacian_pe_column_range(self) -> tuple[int, int] | None:
+        """Column range of the ``laplacian_pe`` block, or ``None`` if absent."""
+        return self._col_ranges.get("laplacian_pe")
+
+    def get_glm_column_range(self) -> tuple[int, int] | None:
+        """Return the ``(start, end)`` span of GLM columns in ``data.x``.
+
+        Spans whichever of ``glm_scalar`` / ``glm_diagonal`` are enabled,
+        read from the offsets recorded by :meth:`build_node_features`. Returns
+        ``None`` when no GLM contrasts are configured or no GLM feature is
+        enabled.
+        """
+        if not self.cfg.glm_contrasts:
             return None
-
-        num_contrasts = len(self.cfg.glm_contrasts)
-        if num_contrasts == 0:
+        ranges = [
+            self._col_ranges[n]
+            for n in ("glm_scalar", "glm_diagonal")
+            if n in self._col_ranges
+        ]
+        if not ranges:
             return None
-
-        # Map each non-GLM feature to its dimensionality.
-        _SCALAR_FEATURES = {
-            "degree", "strength", "betweenness", "clustering",
-        }
-
-        offset = 0
-        col_start = None
-        col_end = None
-
-        for name in self.cfg.node_features:
-            if name in _SCALAR_FEATURES:
-                dim = 1
-            elif name == "glm_scalar":
-                dim = num_contrasts
-                if col_start is None:
-                    col_start = offset
-                col_end = offset + dim
-            elif name == "glm_diagonal":
-                dim = self.cfg.node_feat_dim  # N * num_contrasts — read from cfg
-                # For diagonal mode the dimension is num_nodes * num_contrasts.
-                # Since num_nodes is fixed (atlas-level), infer from
-                # node_feat_dim minus the sum of all other feature dims.
-                non_glm_dim = sum(
-                    1 for f in self.cfg.node_features if f in _SCALAR_FEATURES
-                )
-                dim = self.cfg.node_feat_dim - non_glm_dim
-                if col_start is None:
-                    col_start = offset
-                col_end = offset + dim
-            else:
-                dim = 1  # default assumption for unknown scalar features
-            offset += dim
-
-        if col_start is not None and col_end is not None:
-            return (col_start, col_end)
-        return None
+        return (min(s for s, _ in ranges), max(e for _, e in ranges))
 
     # ------------------------------------------------------------------
     # Built-in node feature methods

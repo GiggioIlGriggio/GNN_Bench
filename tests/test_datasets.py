@@ -392,3 +392,59 @@ class TestLaplacianPEFeature:
         )
         with pytest.raises(ValueError, match="connected"):
             FeatureBuilder(self._cfg(2)).build_node_features(g)
+
+
+# ---------------------------------------------------------------------------
+# Column range tracking
+# ---------------------------------------------------------------------------
+
+class TestColumnRanges:
+    """Recorded column offsets + LapPE/GLM range lookups."""
+
+    def _raw(self, N: int = 6):
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        return RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=torch.stack([src, dst], dim=0),
+            sc_edge_attr=torch.randn(4, 1), num_nodes=N,
+        )
+
+    def test_lap_pe_range_after_degree(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["degree", "laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=4, edge_feat_dim=1, laplacian_pe_dim=3,
+        )
+        fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw())
+        assert fb.get_column_range("laplacian_pe") == (1, 4)
+        assert fb.get_laplacian_pe_column_range() == (1, 4)
+
+    def test_lap_pe_range_none_when_absent(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["degree"], edge_features=["weight"], node_feat_dim=1,
+        )
+        fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw())
+        assert fb.get_laplacian_pe_column_range() is None
+
+    def test_glm_range_after_multidim_feature(self) -> None:
+        # degree(1) + laplacian_pe(3) + glm_scalar(1) -> glm at (4,5).
+        cfg = FeatureConfig(
+            node_features=["degree", "laplacian_pe", "glm_scalar"],
+            edge_features=["weight"], node_feat_dim=5, edge_feat_dim=1,
+            laplacian_pe_dim=3, glm_contrasts=["contrast-A"],
+        )
+        fb = FeatureBuilder(cfg)
+        raw = self._raw()
+        raw.glm_maps = {"contrast-A": np.zeros(6, dtype=np.float32)}
+        fb.build_node_features(raw)
+        assert fb.get_glm_column_range() == (4, 5)
+
+    def test_node_feat_dim_mismatch_raises(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=5, edge_feat_dim=1, laplacian_pe_dim=3,  # 3 != 5
+        )
+        with pytest.raises(ValueError, match="node_feat_dim"):
+            FeatureBuilder(cfg).build_node_features(self._raw())

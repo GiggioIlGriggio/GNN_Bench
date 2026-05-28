@@ -217,49 +217,49 @@ class TestGLMDiagonalFeature:
 class TestGLMColumnRange:
     """Tests for ``FeatureBuilder.get_glm_column_range``."""
 
+    def _raw(self, N: int, contrasts: List[str]):
+        from src.datasets.base_dataset import RawGraphData
+        edge_index = torch.randint(0, N, (2, 20), dtype=torch.int64)
+        glm = {c: np.zeros(N, dtype=np.float32) for c in contrasts}
+        return RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.rand(20, 1), glm_maps=glm or None, num_nodes=N,
+        )
+
     def test_no_glm_features(self) -> None:
-        """No GLM features → None."""
         cfg = FeatureConfig(
-            node_features=["degree", "strength"],
-            edge_features=["weight"],
-            node_feat_dim=2,
-            edge_feat_dim=1,
+            node_features=["degree", "strength"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1,
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, []))
         assert fb.get_glm_column_range() is None
 
     def test_scalar_after_two_features(self) -> None:
-        """degree(1) + strength(1) + glm_scalar(1 contrast) → (2, 3)."""
         cfg = FeatureConfig(
             node_features=["degree", "strength", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=3,
-            edge_feat_dim=1,
+            edge_features=["weight"], node_feat_dim=3, edge_feat_dim=1,
             glm_contrasts=["contrast-A"],
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, ["contrast-A"]))
         assert fb.get_glm_column_range() == (2, 3)
 
     def test_scalar_multi_contrast(self) -> None:
-        """degree(1) + glm_scalar(2 contrasts) → (1, 3)."""
         cfg = FeatureConfig(
-            node_features=["degree", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=3,
-            edge_feat_dim=1,
+            node_features=["degree", "glm_scalar"], edge_features=["weight"],
+            node_feat_dim=3, edge_feat_dim=1,
             glm_contrasts=["contrast-A", "contrast-B"],
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, ["contrast-A", "contrast-B"]))
         assert fb.get_glm_column_range() == (1, 3)
 
     def test_empty_contrasts_returns_none(self) -> None:
-        """GLM feature in list but no contrasts → None."""
+        # No build needed: empty contrasts short-circuits to None.
         cfg = FeatureConfig(
-            node_features=["degree", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=2,
-            edge_feat_dim=1,
-            glm_contrasts=[],
+            node_features=["degree", "glm_scalar"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, glm_contrasts=[],
         )
         fb = FeatureBuilder(cfg)
         assert fb.get_glm_column_range() is None
