@@ -163,6 +163,15 @@ class TrainerConfig(BaseModel):
         default=42,
         description="Global random seed.",
     )
+    sign_flip_cols: Optional[tuple[int, int]] = Field(
+        default=None,
+        description=(
+            "Column range [start, end) of the laplacian_pe block in data.x. "
+            "When set, those columns are randomly sign-flipped per graph each "
+            "training step (eigenvector sign augmentation). Set programmatically "
+            "by scripts/run_experiment.py from FeatureBuilder; not a user knob."
+        ),
+    )
 
     # --- Checkpointing -------------------------------------------------------
     checkpoint_dir: str = Field(

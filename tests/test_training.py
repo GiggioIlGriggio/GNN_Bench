@@ -530,3 +530,64 @@ class TestRandomSignFlip:
         x_orig = x.clone()
         random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(0))
         assert torch.equal(x, x_orig)
+
+
+# ---------------------------------------------------------------------------
+# Trainer sign-flip is train-only (safety-critical invariant)
+# ---------------------------------------------------------------------------
+
+class TestTrainerSignFlipTrainOnly:
+    """The sign-flip must fire in training and never in eval."""
+
+    def _make(self, sign_flip_cols):
+        import numpy as np
+        import torch
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        from src.configs.trainer_config import TrainerConfig
+        from src.training.trainer import Trainer
+
+        class _Recorder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = torch.nn.Linear(1, 1)
+                self.seen = []
+            def forward(self, batch):
+                self.seen.append(batch.x.detach().clone())
+                from torch_geometric.utils import scatter
+                per_node = batch.x.sum(dim=1, keepdim=True)
+                pooled = scatter(per_node, batch.batch, dim=0, reduce="mean")
+                return self.lin(pooled)
+            def auxiliary_loss(self):
+                return None
+
+        graphs = []
+        for s in range(4):
+            x = torch.arange(1, 7, dtype=torch.float32).reshape(3, 2)  # 3 nodes,2 cols
+            ei = torch.tensor([[0, 1], [1, 2]], dtype=torch.int64)
+            g = Data(x=x, edge_index=ei, edge_attr=torch.ones(2, 1),
+                     y=torch.tensor([0.0]), num_nodes=3)
+            graphs.append(g)
+        loader = DataLoader(graphs, batch_size=2)
+        cfg = TrainerConfig(epochs=1, device="cpu", sign_flip_cols=sign_flip_cols)
+        from src.logging.wandb_logger import WandbLogger
+        from src.configs.logging_config import LoggingConfig
+        trainer = Trainer(cfg=cfg, logger=WandbLogger(LoggingConfig(enabled=False)))
+        return trainer, _Recorder(), loader
+
+    def test_train_flips_only_lap_cols_eval_does_not(self) -> None:
+        import torch
+        trainer, model, loader = self._make(sign_flip_cols=(1, 2))
+        opt = torch.optim.SGD(model.parameters(), lr=0.0)
+        # Training pass: column 1 may be sign-flipped, column 0 must not.
+        trainer._train_one_epoch(model, loader, opt)
+        train_x = torch.cat(model.seen, dim=0)
+        orig_col0 = torch.tensor([1.0, 3.0, 5.0] * 4)   # col 0 across 12 nodes
+        orig_col1_abs = torch.tensor([2.0, 4.0, 6.0] * 4)
+        assert torch.equal(train_x[:, 0], orig_col0)        # col 0 untouched
+        assert torch.equal(train_x[:, 1].abs(), orig_col1_abs)  # only sign of col1
+        # Eval pass: nothing is flipped.
+        model.seen.clear()
+        trainer.predict(model, loader, inverse_transform=lambda a: a)
+        eval_x = torch.cat(model.seen, dim=0)
+        assert torch.equal(eval_x[:, 1], orig_col1_abs)  # exact, no sign change

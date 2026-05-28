@@ -509,6 +509,9 @@ class Trainer:
 
         for batch in loader:
             batch = batch.to(device)
+            if self.cfg.sign_flip_cols is not None:
+                s, e = self.cfg.sign_flip_cols
+                batch.x = random_sign_flip(batch.x, batch.batch, s, e)
             optimizer.zero_grad()
             pred = model(batch).squeeze(-1)
             loss = F.mse_loss(pred, batch.y.view(-1))
