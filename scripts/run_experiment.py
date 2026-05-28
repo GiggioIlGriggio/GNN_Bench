@@ -204,29 +204,27 @@ def main(cfg: DictConfig) -> None:
             label_cfg.composite_columns,
         )
 
-    # Compute GLM feature column range for per-fold normalisation.
-    # The FeatureBuilder is already instantiated inside the dataset; extract
-    # the column range so CrossValidator can normalise without data leakage.
-    from src.datasets.feature_builder import FeatureBuilder
+    # Feature column ranges, read from the dataset's FeatureBuilder which has
+    # already built every graph (get_dataset above). Single source of truth.
+    fb = dataset.feature_builder
 
-    glm_col_range = None
-    if feature_cfg.glm_contrasts:
-        fb = FeatureBuilder(feature_cfg)
-        glm_col_range = fb.get_glm_column_range()
-        if glm_col_range is not None:
-            if feature_cfg.glm_normalize:
-                log.info(
-                    "GLM normalisation enabled — columns [%d:%d) will be "
-                    "z-scored per fold (fit on train only).",
-                    glm_col_range[0],
-                    glm_col_range[1],
-                )
-            else:
-                log.info(
-                    "GLM features detected — columns [%d:%d) (normalisation disabled).",
-                    glm_col_range[0],
-                    glm_col_range[1],
-                )
+    glm_col_range = fb.get_glm_column_range()
+    if glm_col_range is not None:
+        log.info(
+            "GLM features at columns [%d:%d) (normalisation %s).",
+            glm_col_range[0], glm_col_range[1],
+            "ENABLED, per-fold" if feature_cfg.glm_normalize else "disabled",
+        )
+
+    lap_pe_col_range = fb.get_laplacian_pe_column_range()
+    if lap_pe_col_range is not None:
+        log.info(
+            "laplacian_pe at columns [%d:%d) — train-time sign-flip enabled.",
+            lap_pe_col_range[0], lap_pe_col_range[1],
+        )
+        trainer_cfg = trainer_cfg.model_copy(
+            update={"sign_flip_cols": lap_pe_col_range}
+        )
 
     # Log dataset statistics to wandb.
     from src.logging.wandb_logger import DatasetStats

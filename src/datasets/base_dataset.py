@@ -307,3 +307,14 @@ class BrainGraphDataset(ABC):
         List[str]
         """
         return list(self._subject_ids)
+
+    @property
+    def feature_builder(self) -> "FeatureBuilder":  # noqa: F821
+        """The dataset's FeatureBuilder (populated with column offsets after
+        graphs have been built via :meth:`get_dataset`)."""
+        if self._feature_builder is None:
+            raise RuntimeError(
+                "feature_builder is unavailable until the dataset has been "
+                "constructed and graphs have been built."
+            )
+        return self._feature_builder

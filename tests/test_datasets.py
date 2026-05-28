@@ -448,3 +448,25 @@ class TestColumnRanges:
         )
         with pytest.raises(ValueError, match="node_feat_dim"):
             FeatureBuilder(cfg).build_node_features(self._raw())
+
+
+# ---------------------------------------------------------------------------
+# Dataset feature_builder property
+# ---------------------------------------------------------------------------
+
+class TestDatasetFeatureBuilderProperty:
+    def test_feature_builder_property_exposes_builder(self) -> None:
+        from src.datasets.feature_builder import FeatureBuilder
+        from src.datasets.base_dataset import BrainGraphDataset
+
+        class _Stub(BrainGraphDataset):
+            def load_raw(self) -> None:
+                self._subject_ids = []
+            def build_graph(self, subject_id):  # pragma: no cover
+                raise NotImplementedError
+
+        ds = _Stub.__new__(_Stub)
+        ds._feature_builder = FeatureBuilder(
+            FeatureConfig(node_features=["degree"], node_feat_dim=1)
+        )
+        assert isinstance(ds.feature_builder, FeatureBuilder)
