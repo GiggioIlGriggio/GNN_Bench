@@ -37,6 +37,32 @@ if TYPE_CHECKING:
 _console = Console(highlight=False)
 
 
+def random_sign_flip(
+    x: torch.Tensor,
+    batch_index: torch.Tensor,
+    col_start: int,
+    col_end: int,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    """Return a copy of ``x`` with columns ``[col_start:col_end)`` sign-flipped
+    by an independent random +-1 per graph (per ``batch_index`` value) and per
+    column. All other columns are untouched.
+
+    Used to augment Laplacian-PE eigenvectors at training time, since their
+    sign is arbitrary; this makes the model sign-invariant. Never called on
+    eval paths.
+    """
+    num_graphs = int(batch_index.max().item()) + 1
+    width = col_end - col_start
+    signs = torch.randint(
+        0, 2, (num_graphs, width),
+        generator=generator, device=x.device, dtype=x.dtype,
+    ) * 2 - 1
+    out = x.clone()
+    out[:, col_start:col_end] = out[:, col_start:col_end] * signs[batch_index]
+    return out
+
+
 def _fmt(val_loss: float, metrics: "MetricDict", star: bool = False) -> str:  # noqa: F821
     """Format val loss and metrics into a compact string for the progress bar."""
     parts = [

@@ -480,3 +480,53 @@ class TestNestedCrossValidator:
                 run_name="test-singleton",
             )
             assert len(result.fold_results) == 3
+
+
+# ---------------------------------------------------------------------------
+# random_sign_flip (LapPE sign augmentation)
+# ---------------------------------------------------------------------------
+
+class TestRandomSignFlip:
+    """Unit tests for the LapPE eigenvector sign-flip augmentation."""
+
+    def _xy(self):
+        import torch
+        x = torch.arange(1, 13, dtype=torch.float32).reshape(4, 3)  # no zeros
+        batch_index = torch.tensor([0, 0, 1, 1])  # 2 graphs
+        return x, batch_index
+
+    def test_only_target_cols_change_and_abs_preserved(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        g = torch.Generator().manual_seed(0)
+        out = random_sign_flip(x, bi, 1, 3, generator=g)
+        assert torch.equal(out[:, 0], x[:, 0])              # col 0 untouched
+        assert torch.equal(out[:, 1:].abs(), x[:, 1:].abs())  # only signs change
+        assert not torch.equal(out, x)                       # something flipped
+
+    def test_signs_constant_within_graph(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        g = torch.Generator().manual_seed(1)
+        out = random_sign_flip(x, bi, 1, 3, generator=g)
+        s0 = torch.sign(out[0, 1:] / x[0, 1:])
+        s1 = torch.sign(out[1, 1:] / x[1, 1:])
+        assert torch.equal(s0, s1)  # rows 0,1 are the same graph
+
+    def test_deterministic_given_generator(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        o1 = random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(7))
+        o2 = random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(7))
+        assert torch.equal(o1, o2)
+
+    def test_does_not_mutate_input(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        x_orig = x.clone()
+        random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(0))
+        assert torch.equal(x, x_orig)
