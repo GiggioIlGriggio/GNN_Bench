@@ -62,6 +62,27 @@ class TestGraphContractValidation:
 
 
 # ---------------------------------------------------------------------------
+# FeatureConfig new fields
+# ---------------------------------------------------------------------------
+
+class TestFeatureConfigNewFields:
+    """Defaults and constraints for the positional/identity feature config."""
+
+    def test_defaults(self) -> None:
+        cfg = FeatureConfig(node_features=["degree"], node_feat_dim=1)
+        assert cfg.laplacian_pe_dim == 8
+        assert cfg.cycle_max_length == 4
+
+    def test_laplacian_pe_dim_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            FeatureConfig(node_features=["degree"], node_feat_dim=1, laplacian_pe_dim=0)
+
+    def test_cycle_max_length_at_least_two(self) -> None:
+        with pytest.raises(ValueError):
+            FeatureConfig(node_features=["degree"], node_feat_dim=1, cycle_max_length=1)
+
+
+# ---------------------------------------------------------------------------
 # Feature builder
 # ---------------------------------------------------------------------------
 
