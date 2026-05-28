@@ -328,10 +328,6 @@ class FeatureBuilder:
         counts = torch.stack(cols, dim=-1)  # [N, L-1]
         return torch.log1p(counts)
 
-    # ------------------------------------------------------------------
-    # GLM map node feature methods
-    # ------------------------------------------------------------------
-
     def _node_feat_laplacian_pe(self, graph_data: RawGraphData) -> torch.Tensor:
         """Laplacian positional encoding: k eigenvectors of the smallest
         non-zero eigenvalues of the symmetric normalized Laplacian.
@@ -357,7 +353,8 @@ class FeatureBuilder:
         L = torch.eye(N) - d_inv_sqrt.unsqueeze(1) * A * d_inv_sqrt.unsqueeze(0)
 
         eigvals, eigvecs = np.linalg.eigh(L.numpy())  # ascending order
-        num_zero = int((eigvals < 1e-6).sum())  # multiplicity of 0 = #components
+        # numerical zero: true lambda_0 ~ 5e-8; Fiedler value >= ~1e-5 for realistic graphs.
+        num_zero = int((eigvals < 1e-6).sum())  # multiplicity of 0 == #components
         if num_zero > 1:
             raise ValueError(
                 f"'laplacian_pe' requires a connected graph but found "
@@ -370,6 +367,10 @@ class FeatureBuilder:
             pad = torch.zeros(N, k - pe.shape[1], dtype=torch.float32)
             pe = torch.cat([pe, pad], dim=-1)
         return pe
+
+    # ------------------------------------------------------------------
+    # GLM map node feature methods
+    # ------------------------------------------------------------------
 
     def _node_feat_glm_scalar(self, graph_data: RawGraphData) -> torch.Tensor:
         """Per-node GLM activation value (scalar per contrast).
