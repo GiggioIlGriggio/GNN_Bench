@@ -577,17 +577,40 @@ class TestTrainerSignFlipTrainOnly:
 
     def test_train_flips_only_lap_cols_eval_does_not(self) -> None:
         import torch
+        # Seed 0 is the first seed for which the sign-flip hook deterministically
+        # produces at least one negative value in col 1 across a full epoch.
+        # The trainer does NOT internally re-seed the global RNG, so we control
+        # the global RNG via torch.manual_seed() immediately before each pass.
+        _SEED = 0
+
         trainer, model, loader = self._make(sign_flip_cols=(1, 2))
         opt = torch.optim.SGD(model.parameters(), lr=0.0)
-        # Training pass: column 1 may be sign-flipped, column 0 must not.
+
+        # --- Training pass ---------------------------------------------------
+        # Seed the global RNG so the flip is deterministic and we can assert
+        # that it definitely fired (produced at least one negative value).
+        torch.manual_seed(_SEED)
         trainer._train_one_epoch(model, loader, opt)
         train_x = torch.cat(model.seen, dim=0)
         orig_col0 = torch.tensor([1.0, 3.0, 5.0] * 4)   # col 0 across 12 nodes
         orig_col1_abs = torch.tensor([2.0, 4.0, 6.0] * 4)
-        assert torch.equal(train_x[:, 0], orig_col0)        # col 0 untouched
-        assert torch.equal(train_x[:, 1].abs(), orig_col1_abs)  # only sign of col1
-        # Eval pass: nothing is flipped.
+
+        assert torch.equal(train_x[:, 0], orig_col0)           # col 0 untouched
+        assert torch.equal(train_x[:, 1].abs(), orig_col1_abs) # only sign of col1 changes
+        # Positive assertion: with seed 0 the hook MUST have fired and flipped
+        # at least one value to negative. Without the hook col1 stays all-positive
+        # and this assertion fails, making the test a genuine guard.
+        assert (train_x[:, 1] < 0).any(), (
+            "sign-flip hook did not fire during training — col1 is all-positive"
+        )
+
+        # --- Eval pass -------------------------------------------------------
+        # Re-seed identically so that IF predict() wrongly applied the same flip
+        # it would produce the identical deterministic negatives we saw above.
+        # We then assert col1 exactly equals the positive originals, proving
+        # the hook was correctly absent from the eval path.
         model.seen.clear()
+        torch.manual_seed(_SEED)
         trainer.predict(model, loader, inverse_transform=lambda a: a)
         eval_x = torch.cat(model.seen, dim=0)
         assert torch.equal(eval_x[:, 1], orig_col1_abs)  # exact, no sign change
