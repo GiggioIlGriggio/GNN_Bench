@@ -1,0 +1,27 @@
+# Laplacian positional encoding (symmetric normalized Laplacian eigenvectors).
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# Requires a thresholded (sparse) graph: build raises on a fully-dense or
+# disconnected adjacency. Set dataset.edge_threshold_mode to a sparse mode.
+#
+# Eigenvector signs are arbitrary; they are randomly flipped per graph each
+# training step (train-only augmentation wired via run_experiment.py).
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=laplacian_pe ...
+
+node_features:
+  - laplacian_pe
+edge_features:
+  - weight
+
+# node_feat_dim must equal laplacian_pe_dim (k).
+laplacian_pe_dim: 8
+node_feat_dim: 8
+edge_feat_dim: 1
+
+# GLM disabled.
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts: []
+glm_normalize: false
