@@ -1,0 +1,32 @@
+# SC connectivity-profile concatenated with the GLM diagonal embedding.
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# node_features = [sc_row, glm_diagonal]:
+#   sc_row        -> 400-wide; each node's row in the N x N SC matrix. Columns [0:400).
+#   glm_diagonal  -> 400*num_contrasts-wide; each node holds its GLM activation
+#                    on its own diagonal cell, zeros elsewhere.
+#                    Columns [400:400+400*num_contrasts).
+# The GLM slice is z-scored per training fold by the FoldBarrier when
+# glm_normalize is true (leak-free); only the diagonal entries have non-zero
+# variance, so the structural zeros stay zero. sc_row is left untouched.
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=scprofile_glm_diagonal ...
+
+node_features:
+  - sc_row
+  - glm_diagonal
+edge_features:
+  - weight
+
+# node_feat_dim = sc_row(400) + glm_diagonal(400 * num_contrasts).
+# With 1 contrast: 400 + 400 = 800.
+node_feat_dim: 800
+edge_feat_dim: 1
+
+# GLM settings (diagonal embedding, z-scored per fold).
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts:
+  - contrast-2back_vs_0back
+glm_normalize: true

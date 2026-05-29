@@ -1,0 +1,38 @@
+# Laplacian positional encoding concatenated with the per-node GLM scalar value.
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# node_features = [laplacian_pe, glm_scalar]  (laplacian_pe FIRST on purpose):
+#   laplacian_pe -> laplacian_pe_dim (k=8) eigenvectors. Columns [0:8).
+#                   Listed first so the train-time sign-flip augmentation
+#                   (wired via run_experiment.py from get_laplacian_pe_column_range)
+#                   targets columns [0:8).
+#   glm_scalar   -> num_contrasts scalar GLM activation value(s) per node.
+#                   Columns [8:8+num_contrasts).
+# The GLM slice is z-scored per training fold by the FoldBarrier when
+# glm_normalize is true (leak-free).
+#
+# Requires a thresholded (sparse), connected graph (laplacian_pe build raises
+# otherwise). PNC SC with topk_percent thresholding + MST connectivity repair
+# satisfies this.
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=laplacian_pe_glm_scalar ...
+
+node_features:
+  - laplacian_pe
+  - glm_scalar
+edge_features:
+  - weight
+
+# node_feat_dim = laplacian_pe(laplacian_pe_dim=8) + glm_scalar(num_contrasts).
+# With 1 contrast: 8 + 1 = 9.
+laplacian_pe_dim: 8
+node_feat_dim: 9
+edge_feat_dim: 1
+
+# GLM settings (scalar value per node, z-scored per fold).
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts:
+  - contrast-2back_vs_0back
+glm_normalize: true
