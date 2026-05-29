@@ -1,0 +1,34 @@
+# Combined positional + identity node features:
+#   laplacian_pe (8-dim, sym-normalized Laplacian eigenvectors)
+# + cycle_counts (3-dim, ID-GNN-Fast log1p([A^l]_vv) for l=2..4)
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# Both are computed on the binarized primary (SC) adjacency; the weighted
+# edge_attr is untouched. Requires a thresholded (sparse) graph: build raises
+# on a fully-dense or (for laplacian_pe) disconnected adjacency. Set
+# dataset.edge_threshold_mode to a sparse mode.
+#
+# laplacian_pe is listed first, so it occupies columns [0:8) of data.x and the
+# train-time eigenvector sign-flip augmentation (wired via run_experiment.py)
+# targets exactly that block. cycle_counts occupies [8:11).
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=lappe_cycle ...
+
+node_features:
+  - laplacian_pe
+  - cycle_counts
+edge_features:
+  - weight
+
+# node_feat_dim = laplacian_pe_dim (8) + (cycle_max_length - 1) (3) = 11.
+laplacian_pe_dim: 8
+cycle_max_length: 4
+node_feat_dim: 11
+edge_feat_dim: 1
+
+# GLM disabled.
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts: []
+glm_normalize: false
