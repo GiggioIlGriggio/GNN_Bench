@@ -33,6 +33,28 @@ class FeatureConfig(BaseModel):
     )
 
     # ------------------------------------------------------------------
+    # Positional / identity feature settings
+    # ------------------------------------------------------------------
+    laplacian_pe_dim: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Number of Laplacian positional-encoding eigenvectors (k). Width "
+            "of the 'laplacian_pe' feature. Eigenvectors of the smallest "
+            "non-zero eigenvalues of the symmetric normalized Laplacian."
+        ),
+    )
+    cycle_max_length: int = Field(
+        default=4,
+        ge=2,
+        description=(
+            "Max closed-walk length L for the 'cycle_counts' feature. Emits "
+            "[A^l]_vv for l = 2..L (width L-1). l=1 is omitted (always 0 with "
+            "no self-loops); l=2 equals node degree."
+        ),
+    )
+
+    # ------------------------------------------------------------------
     # GLM map node feature settings
     # ------------------------------------------------------------------
     glm_aggregation: str = Field(

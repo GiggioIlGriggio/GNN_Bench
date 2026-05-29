@@ -62,6 +62,27 @@ class TestGraphContractValidation:
 
 
 # ---------------------------------------------------------------------------
+# FeatureConfig new fields
+# ---------------------------------------------------------------------------
+
+class TestFeatureConfigNewFields:
+    """Defaults and constraints for the positional/identity feature config."""
+
+    def test_defaults(self) -> None:
+        cfg = FeatureConfig(node_features=["degree"], node_feat_dim=1)
+        assert cfg.laplacian_pe_dim == 8
+        assert cfg.cycle_max_length == 4
+
+    def test_laplacian_pe_dim_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            FeatureConfig(node_features=["degree"], node_feat_dim=1, laplacian_pe_dim=0)
+
+    def test_cycle_max_length_at_least_two(self) -> None:
+        with pytest.raises(ValueError):
+            FeatureConfig(node_features=["degree"], node_feat_dim=1, cycle_max_length=1)
+
+
+# ---------------------------------------------------------------------------
 # Feature builder
 # ---------------------------------------------------------------------------
 
@@ -230,3 +251,222 @@ class TestDatasetRegistry:
         # raise NotImplementedError(
             # "TODO: try to register a class with an existing name, assert ValueError"
         # )
+
+
+# ---------------------------------------------------------------------------
+# cycle_counts node feature
+# ---------------------------------------------------------------------------
+
+class TestCycleCountsFeature:
+    """Tests for _node_feat_cycle_counts (ID-GNN-Fast identity features)."""
+
+    def _sparse_triangle_plus_tail(self, N: int = 4):
+        # Triangle on {0,1,2} + edge 0-3. Sparse (not complete), connected.
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        edge_index = torch.stack([src, dst], dim=0)
+        edge_attr = torch.randn(edge_index.shape[1], 1)
+        return RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=edge_index,
+            sc_edge_attr=edge_attr,
+            num_nodes=N,
+        )
+
+    def test_shape_and_values(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        out = fb.build_node_features(self._sparse_triangle_plus_tail())
+        assert out.shape == (4, 2)  # l in {2,3} -> width 2
+        # A^2 diag = degree = [3,2,2,1]; A^3 diag = 2*triangles = [2,2,2,0]
+        expected = torch.log1p(torch.tensor(
+            [[3.0, 2.0], [2.0, 2.0], [2.0, 2.0], [1.0, 0.0]]
+        ))
+        assert torch.allclose(out, expected, atol=1e-5)
+
+    def test_binarization_ignores_weights(self) -> None:
+        # Same topology, different (and negative) weights -> identical counts.
+        g = self._sparse_triangle_plus_tail()
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        out_a = fb.build_node_features(g)
+        g2 = RawGraphData(
+            subject_id="sub-001", sc_edge_index=g.sc_edge_index,
+            sc_edge_attr=g.sc_edge_attr * -7.0 + 3.0, num_nodes=4,
+        )
+        out_b = fb.build_node_features(g2)
+        assert torch.allclose(out_a, out_b)
+
+    def test_raises_on_fully_dense(self) -> None:
+        # Complete graph K4 -> binarized A all-ones off-diagonal.
+        N = 4
+        src, dst = [], []
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    src.append(i); dst.append(j)
+        edge_index = torch.tensor([src, dst], dtype=torch.int64)
+        g = RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.ones(edge_index.shape[1], 1), num_nodes=N,
+        )
+        cfg = FeatureConfig(
+            node_features=["cycle_counts"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, cycle_max_length=3,
+        )
+        fb = FeatureBuilder(cfg)
+        with pytest.raises(ValueError, match="dense"):
+            fb.build_node_features(g)
+
+
+# ---------------------------------------------------------------------------
+# laplacian_pe node feature
+# ---------------------------------------------------------------------------
+
+class TestLaplacianPEFeature:
+    """Tests for _node_feat_laplacian_pe."""
+
+    def _sparse_connected(self, N: int = 4):
+        # Triangle {0,1,2} + edge 0-3: connected, sparse.
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        edge_index = torch.stack([src, dst], dim=0)
+        return RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.randn(edge_index.shape[1], 1), num_nodes=N,
+        )
+
+    def _cfg(self, k: int):
+        return FeatureConfig(
+            node_features=["laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=k, edge_feat_dim=1, laplacian_pe_dim=k,
+        )
+
+    def test_shape_and_determinism(self) -> None:
+        fb = FeatureBuilder(self._cfg(2))
+        g = self._sparse_connected()
+        out1 = fb.build_node_features(g)
+        out2 = fb.build_node_features(g)
+        assert out1.shape == (4, 2)
+        assert out1.dtype == torch.float32
+        assert torch.allclose(out1, out2)  # eigh is deterministic per matrix
+
+    def test_binarization_ignores_weights(self) -> None:
+        fb = FeatureBuilder(self._cfg(2))
+        g = self._sparse_connected()
+        out_a = fb.build_node_features(g)
+        g2 = RawGraphData(
+            subject_id="sub-001", sc_edge_index=g.sc_edge_index,
+            sc_edge_attr=g.sc_edge_attr * 13.0 - 4.0, num_nodes=4,
+        )
+        out_b = fb.build_node_features(g2)
+        assert torch.allclose(out_a, out_b)
+
+    def test_raises_on_dense(self) -> None:
+        N = 4
+        src, dst = [], []
+        for i in range(N):
+            for j in range(N):
+                if i != j:
+                    src.append(i); dst.append(j)
+        g = RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=torch.tensor([src, dst], dtype=torch.int64),
+            sc_edge_attr=torch.ones(len(src), 1), num_nodes=N,
+        )
+        with pytest.raises(ValueError, match="dense"):
+            FeatureBuilder(self._cfg(2)).build_node_features(g)
+
+    def test_raises_on_disconnected(self) -> None:
+        # Two disjoint edges: 0-1 and 2-3 -> 2 components.
+        edge_index = torch.tensor([[0, 2], [1, 3]], dtype=torch.int64)
+        g = RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.ones(2, 1), num_nodes=4,
+        )
+        with pytest.raises(ValueError, match="connected"):
+            FeatureBuilder(self._cfg(2)).build_node_features(g)
+
+
+# ---------------------------------------------------------------------------
+# Column range tracking
+# ---------------------------------------------------------------------------
+
+class TestColumnRanges:
+    """Recorded column offsets + LapPE/GLM range lookups."""
+
+    def _raw(self, N: int = 6):
+        src = torch.tensor([0, 1, 0, 0])
+        dst = torch.tensor([1, 2, 2, 3])
+        return RawGraphData(
+            subject_id="sub-001",
+            sc_edge_index=torch.stack([src, dst], dim=0),
+            sc_edge_attr=torch.randn(4, 1), num_nodes=N,
+        )
+
+    def test_lap_pe_range_after_degree(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["degree", "laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=4, edge_feat_dim=1, laplacian_pe_dim=3,
+        )
+        fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw())
+        assert fb.get_column_range("laplacian_pe") == (1, 4)
+        assert fb.get_laplacian_pe_column_range() == (1, 4)
+
+    def test_lap_pe_range_none_when_absent(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["degree"], edge_features=["weight"], node_feat_dim=1,
+        )
+        fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw())
+        assert fb.get_laplacian_pe_column_range() is None
+
+    def test_glm_range_after_multidim_feature(self) -> None:
+        # degree(1) + laplacian_pe(3) + glm_scalar(1) -> glm at (4,5).
+        cfg = FeatureConfig(
+            node_features=["degree", "laplacian_pe", "glm_scalar"],
+            edge_features=["weight"], node_feat_dim=5, edge_feat_dim=1,
+            laplacian_pe_dim=3, glm_contrasts=["contrast-A"],
+        )
+        fb = FeatureBuilder(cfg)
+        raw = self._raw()
+        raw.glm_maps = {"contrast-A": np.zeros(6, dtype=np.float32)}
+        fb.build_node_features(raw)
+        assert fb.get_glm_column_range() == (4, 5)
+
+    def test_node_feat_dim_mismatch_raises(self) -> None:
+        cfg = FeatureConfig(
+            node_features=["laplacian_pe"], edge_features=["weight"],
+            node_feat_dim=5, edge_feat_dim=1, laplacian_pe_dim=3,  # 3 != 5
+        )
+        with pytest.raises(ValueError, match="node_feat_dim"):
+            FeatureBuilder(cfg).build_node_features(self._raw())
+
+
+# ---------------------------------------------------------------------------
+# Dataset feature_builder property
+# ---------------------------------------------------------------------------
+
+class TestDatasetFeatureBuilderProperty:
+    def test_feature_builder_property_exposes_builder(self) -> None:
+        from src.datasets.feature_builder import FeatureBuilder
+        from src.datasets.base_dataset import BrainGraphDataset
+
+        class _Stub(BrainGraphDataset):
+            def load_raw(self) -> None:
+                self._subject_ids = []
+            def build_graph(self, subject_id):  # pragma: no cover
+                raise NotImplementedError
+
+        ds = _Stub.__new__(_Stub)
+        ds._feature_builder = FeatureBuilder(
+            FeatureConfig(node_features=["degree"], node_feat_dim=1)
+        )
+        assert isinstance(ds.feature_builder, FeatureBuilder)

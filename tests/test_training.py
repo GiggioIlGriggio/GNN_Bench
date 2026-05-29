@@ -480,3 +480,137 @@ class TestNestedCrossValidator:
                 run_name="test-singleton",
             )
             assert len(result.fold_results) == 3
+
+
+# ---------------------------------------------------------------------------
+# random_sign_flip (LapPE sign augmentation)
+# ---------------------------------------------------------------------------
+
+class TestRandomSignFlip:
+    """Unit tests for the LapPE eigenvector sign-flip augmentation."""
+
+    def _xy(self):
+        import torch
+        x = torch.arange(1, 13, dtype=torch.float32).reshape(4, 3)  # no zeros
+        batch_index = torch.tensor([0, 0, 1, 1])  # 2 graphs
+        return x, batch_index
+
+    def test_only_target_cols_change_and_abs_preserved(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        g = torch.Generator().manual_seed(0)
+        out = random_sign_flip(x, bi, 1, 3, generator=g)
+        assert torch.equal(out[:, 0], x[:, 0])              # col 0 untouched
+        assert torch.equal(out[:, 1:].abs(), x[:, 1:].abs())  # only signs change
+        assert not torch.equal(out, x)                       # something flipped
+
+    def test_signs_constant_within_graph(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        g = torch.Generator().manual_seed(1)
+        out = random_sign_flip(x, bi, 1, 3, generator=g)
+        s0 = torch.sign(out[0, 1:] / x[0, 1:])
+        s1 = torch.sign(out[1, 1:] / x[1, 1:])
+        assert torch.equal(s0, s1)  # rows 0,1 are the same graph
+
+    def test_deterministic_given_generator(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        o1 = random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(7))
+        o2 = random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(7))
+        assert torch.equal(o1, o2)
+
+    def test_does_not_mutate_input(self) -> None:
+        import torch
+        from src.training.trainer import random_sign_flip
+        x, bi = self._xy()
+        x_orig = x.clone()
+        random_sign_flip(x, bi, 1, 3, generator=torch.Generator().manual_seed(0))
+        assert torch.equal(x, x_orig)
+
+
+# ---------------------------------------------------------------------------
+# Trainer sign-flip is train-only (safety-critical invariant)
+# ---------------------------------------------------------------------------
+
+class TestTrainerSignFlipTrainOnly:
+    """The sign-flip must fire in training and never in eval."""
+
+    def _make(self, sign_flip_cols):
+        import numpy as np
+        import torch
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        from src.configs.trainer_config import TrainerConfig
+        from src.training.trainer import Trainer
+
+        class _Recorder(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = torch.nn.Linear(1, 1)
+                self.seen = []
+            def forward(self, batch):
+                self.seen.append(batch.x.detach().clone())
+                from torch_geometric.utils import scatter
+                per_node = batch.x.sum(dim=1, keepdim=True)
+                pooled = scatter(per_node, batch.batch, dim=0, reduce="mean")
+                return self.lin(pooled)
+            def auxiliary_loss(self):
+                return None
+
+        graphs = []
+        for s in range(4):
+            x = torch.arange(1, 7, dtype=torch.float32).reshape(3, 2)  # 3 nodes,2 cols
+            ei = torch.tensor([[0, 1], [1, 2]], dtype=torch.int64)
+            g = Data(x=x, edge_index=ei, edge_attr=torch.ones(2, 1),
+                     y=torch.tensor([0.0]), num_nodes=3)
+            graphs.append(g)
+        loader = DataLoader(graphs, batch_size=2)
+        cfg = TrainerConfig(epochs=1, device="cpu", sign_flip_cols=sign_flip_cols)
+        from src.logging.wandb_logger import WandbLogger
+        from src.configs.logging_config import LoggingConfig
+        trainer = Trainer(cfg=cfg, logger=WandbLogger(LoggingConfig(enabled=False)))
+        return trainer, _Recorder(), loader
+
+    def test_train_flips_only_lap_cols_eval_does_not(self) -> None:
+        import torch
+        # Seed 0 is the first seed for which the sign-flip hook deterministically
+        # produces at least one negative value in col 1 across a full epoch.
+        # The trainer does NOT internally re-seed the global RNG, so we control
+        # the global RNG via torch.manual_seed() immediately before each pass.
+        _SEED = 0
+
+        trainer, model, loader = self._make(sign_flip_cols=(1, 2))
+        opt = torch.optim.SGD(model.parameters(), lr=0.0)
+
+        # --- Training pass ---------------------------------------------------
+        # Seed the global RNG so the flip is deterministic and we can assert
+        # that it definitely fired (produced at least one negative value).
+        torch.manual_seed(_SEED)
+        trainer._train_one_epoch(model, loader, opt)
+        train_x = torch.cat(model.seen, dim=0)
+        orig_col0 = torch.tensor([1.0, 3.0, 5.0] * 4)   # col 0 across 12 nodes
+        orig_col1_abs = torch.tensor([2.0, 4.0, 6.0] * 4)
+
+        assert torch.equal(train_x[:, 0], orig_col0)           # col 0 untouched
+        assert torch.equal(train_x[:, 1].abs(), orig_col1_abs) # only sign of col1 changes
+        # Positive assertion: with seed 0 the hook MUST have fired and flipped
+        # at least one value to negative. Without the hook col1 stays all-positive
+        # and this assertion fails, making the test a genuine guard.
+        assert (train_x[:, 1] < 0).any(), (
+            "sign-flip hook did not fire during training — col1 is all-positive"
+        )
+
+        # --- Eval pass -------------------------------------------------------
+        # Re-seed identically so that IF predict() wrongly applied the same flip
+        # it would produce the identical deterministic negatives we saw above.
+        # We then assert col1 exactly equals the positive originals, proving
+        # the hook was correctly absent from the eval path.
+        model.seen.clear()
+        torch.manual_seed(_SEED)
+        trainer.predict(model, loader, inverse_transform=lambda a: a)
+        eval_x = torch.cat(model.seen, dim=0)
+        assert torch.equal(eval_x[:, 1], orig_col1_abs)  # exact, no sign change

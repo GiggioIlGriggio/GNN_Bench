@@ -217,49 +217,49 @@ class TestGLMDiagonalFeature:
 class TestGLMColumnRange:
     """Tests for ``FeatureBuilder.get_glm_column_range``."""
 
+    def _raw(self, N: int, contrasts: List[str]):
+        from src.datasets.base_dataset import RawGraphData
+        edge_index = torch.randint(0, N, (2, 20), dtype=torch.int64)
+        glm = {c: np.zeros(N, dtype=np.float32) for c in contrasts}
+        return RawGraphData(
+            subject_id="sub-001", sc_edge_index=edge_index,
+            sc_edge_attr=torch.rand(20, 1), glm_maps=glm or None, num_nodes=N,
+        )
+
     def test_no_glm_features(self) -> None:
-        """No GLM features → None."""
         cfg = FeatureConfig(
-            node_features=["degree", "strength"],
-            edge_features=["weight"],
-            node_feat_dim=2,
-            edge_feat_dim=1,
+            node_features=["degree", "strength"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1,
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, []))
         assert fb.get_glm_column_range() is None
 
     def test_scalar_after_two_features(self) -> None:
-        """degree(1) + strength(1) + glm_scalar(1 contrast) → (2, 3)."""
         cfg = FeatureConfig(
             node_features=["degree", "strength", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=3,
-            edge_feat_dim=1,
+            edge_features=["weight"], node_feat_dim=3, edge_feat_dim=1,
             glm_contrasts=["contrast-A"],
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, ["contrast-A"]))
         assert fb.get_glm_column_range() == (2, 3)
 
     def test_scalar_multi_contrast(self) -> None:
-        """degree(1) + glm_scalar(2 contrasts) → (1, 3)."""
         cfg = FeatureConfig(
-            node_features=["degree", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=3,
-            edge_feat_dim=1,
+            node_features=["degree", "glm_scalar"], edge_features=["weight"],
+            node_feat_dim=3, edge_feat_dim=1,
             glm_contrasts=["contrast-A", "contrast-B"],
         )
         fb = FeatureBuilder(cfg)
+        fb.build_node_features(self._raw(10, ["contrast-A", "contrast-B"]))
         assert fb.get_glm_column_range() == (1, 3)
 
     def test_empty_contrasts_returns_none(self) -> None:
-        """GLM feature in list but no contrasts → None."""
+        # No build needed: empty contrasts short-circuits to None.
         cfg = FeatureConfig(
-            node_features=["degree", "glm_scalar"],
-            edge_features=["weight"],
-            node_feat_dim=2,
-            edge_feat_dim=1,
-            glm_contrasts=[],
+            node_features=["degree", "glm_scalar"], edge_features=["weight"],
+            node_feat_dim=2, edge_feat_dim=1, glm_contrasts=[],
         )
         fb = FeatureBuilder(cfg)
         assert fb.get_glm_column_range() is None
@@ -379,3 +379,188 @@ class TestGLMFeatureNormalizer:
         # Test values should be far from zero (using train stats on different dist)
         test_means = torch.stack([g.x[:, 2:3] for g in test_graphs]).mean(dim=0)
         assert test_means.abs().mean() > 1.0  # definitely not zero-centered
+
+
+# ---------------------------------------------------------------------------
+# End-to-end: built dataset → feature_builder range → per-fold normalisation
+# ---------------------------------------------------------------------------
+
+class TestGLMPerFoldNormalizationIntegration:
+    """Verify GLM per-fold normalisation is *active and correctly targeted*.
+
+    This closes the seam that the unit tests leave open: each link
+    (``get_glm_column_range``, the ``feature_builder`` property, the
+    ``FoldBarrier``) is green in isolation, but nothing asserts that the
+    range read from a **built dataset's** ``feature_builder`` actually
+    indexes the GLM columns of the produced ``data.x`` and is the range that
+    ``CrossValidator`` feeds into the barrier. We reproduce that exact chain
+    on synthetic data (no real dataset paths) — the same one
+    ``scripts/run_experiment.py`` walks.
+    """
+
+    NUM_NODES = 6
+    NUM_SUBJECTS = 12
+    CONTRASTS = ["contrast-A", "contrast-B"]
+
+    def _make_dataset(self):
+        """A minimal concrete ``BrainGraphDataset`` that builds graphs through
+        the real ``FeatureBuilder`` path, with degree + strength + 2-contrast
+        glm_scalar (GLM columns land at offset (2, 4))."""
+        from src.configs.dataset_config import DatasetConfig
+        from src.configs.label_config import LabelConfig
+        from src.datasets.base_dataset import BrainGraphDataset, RawGraphData
+
+        num_nodes, num_subjects, contrasts = (
+            self.NUM_NODES, self.NUM_SUBJECTS, self.CONTRASTS,
+        )
+
+        class _SyntheticDataset(BrainGraphDataset):
+            def load_raw(self) -> None:
+                self._feature_builder = FeatureBuilder(self.feature_cfg)
+                self._raw_data = {}
+                self._subject_ids = []
+                rng = np.random.default_rng(0)
+                for i in range(num_subjects):
+                    sid = f"sub-{i:03d}"
+                    # A connected ring so degree/strength are non-trivial.
+                    src = list(range(num_nodes))
+                    dst = [(j + 1) % num_nodes for j in range(num_nodes)]
+                    edge_index = torch.tensor(
+                        [src + dst, dst + src], dtype=torch.int64,
+                    )
+                    edge_attr = torch.rand(
+                        edge_index.shape[1], 1, dtype=torch.float32,
+                    )
+                    # Distinct GLM maps per subject so normalisation is a real
+                    # transform (per-node variance across subjects > 0).
+                    glm_maps = {
+                        c: (rng.standard_normal(num_nodes) * (k + 1) + 5.0 * i)
+                        .astype(np.float32)
+                        for k, c in enumerate(contrasts)
+                    }
+                    self._raw_data[sid] = RawGraphData(
+                        subject_id=sid,
+                        sc_edge_index=edge_index,
+                        sc_edge_attr=edge_attr,
+                        glm_maps=glm_maps,
+                        num_nodes=num_nodes,
+                        metadata={"sdi_AGE": float(8 + i)},
+                    )
+                    self._subject_ids.append(sid)
+
+            def build_graph(self, subject_id: str):
+                # Mirror PncDataset.build_graph exactly: x from the shared
+                # FeatureBuilder, sc edges, scalar label from metadata.
+                raw = self._raw_data[subject_id]
+                x = self._feature_builder.build_node_features(raw)
+                edge_attr = self._feature_builder.build_edge_features(raw)
+                data = torch_geometric.data.Data(
+                    x=x,
+                    edge_index=raw.sc_edge_index,
+                    edge_attr=edge_attr,
+                    y=torch.tensor(
+                        [float(raw.metadata["sdi_AGE"])], dtype=torch.float32,
+                    ),
+                    num_nodes=raw.num_nodes,
+                )
+                data.subject_id = subject_id
+                return data
+
+        feature_cfg = FeatureConfig(
+            node_features=["degree", "strength", "glm_scalar"],
+            edge_features=["weight"],
+            node_feat_dim=2 + len(contrasts),  # degree + strength + glm
+            edge_feat_dim=1,
+            glm_contrasts=contrasts,
+            glm_normalize=True,
+        )
+        ds = _SyntheticDataset(
+            cfg=DatasetConfig(name="synthetic", root="/tmp/does-not-exist"),
+            feature_cfg=feature_cfg,
+            label_cfg=LabelConfig(),
+        )
+        ds.load_raw()
+        return ds, feature_cfg
+
+    def test_built_range_indexes_real_glm_columns(self) -> None:
+        """The range from the built dataset's ``feature_builder`` must point at
+        the actual GLM columns of ``data.x`` — not a stale or off-by-one slice."""
+        ds, _ = self._make_dataset()
+        graphs = ds.get_dataset()
+
+        glm_col_range = ds.feature_builder.get_glm_column_range()
+        # degree(1) + strength(1) → GLM at columns [2, 4).
+        assert glm_col_range == (2, 4)
+
+        # The slice the range selects must equal the raw GLM maps, contrast
+        # order preserved (col 2 = contrast-A, col 3 = contrast-B).
+        start, end = glm_col_range
+        for sid, g in zip(ds.get_subject_ids(), graphs):
+            raw = ds._raw_data[sid]
+            expected = torch.stack(
+                [torch.tensor(raw.glm_maps[c]) for c in self.CONTRASTS], dim=1,
+            )
+            assert torch.allclose(g.x[:, start:end], expected, atol=1e-5)
+
+    def test_per_fold_normalization_fires_on_built_range(self) -> None:
+        """Feed the built-dataset range into a ``FoldBarrier`` exactly as
+        ``CrossValidator`` does, and confirm the GLM slice is z-scored on the
+        train pool while non-GLM columns are untouched."""
+        from src.training.fold_barrier import FoldBarrier
+
+        ds, _ = self._make_dataset()
+        graphs = ds.get_dataset()
+        glm_col_range = ds.feature_builder.get_glm_column_range()
+        start, end = glm_col_range
+
+        n = len(graphs)
+        train, val, test = graphs[: n - 4], graphs[n - 4 : n - 2], graphs[n - 2 :]
+        labels = np.array([float(g.y.item()) for g in graphs])
+        train_labels = labels[: n - 4]
+
+        barrier = FoldBarrier(
+            label_norm_strategy="standard",
+            glm_col_range=glm_col_range,
+            glm_normalize=True,
+        )
+        barrier.fit(train, train_labels)
+        train_t = barrier.transform_graphs(train)
+        test_t = barrier.transform_graphs(test)
+
+        # Train GLM slice is z-scored: per-(node, col) mean across train ≈ 0.
+        train_slice = torch.stack([g.x[:, start:end] for g in train_t])
+        assert torch.allclose(
+            train_slice.mean(dim=0), torch.zeros(self.NUM_NODES, end - start),
+            atol=1e-5,
+        )
+        # Sanity: it actually moved (raw GLM values were not already centred).
+        raw_train_slice = torch.stack([g.x[:, start:end] for g in train])
+        assert not torch.allclose(train_slice, raw_train_slice, atol=1e-3)
+
+        # Non-GLM columns (degree, strength) are left exactly as built.
+        for built, transformed in zip(train, train_t):
+            assert torch.allclose(built.x[:, :start], transformed.x[:, :start])
+
+        # Test split is transformed with TRAIN stats — its later subjects have a
+        # large offset (5.0 * i), so it is NOT independently zero-centred.
+        test_slice = torch.stack([g.x[:, start:end] for g in test_t])
+        assert test_slice.mean().abs() > 0.5
+
+    def test_normalize_flag_gates_the_transform(self) -> None:
+        """With ``glm_normalize=False`` the same range must leave GLM columns
+        untouched — proving the flag genuinely gates per-fold normalisation."""
+        from src.training.fold_barrier import FoldBarrier
+
+        ds, _ = self._make_dataset()
+        graphs = ds.get_dataset()
+        glm_col_range = ds.feature_builder.get_glm_column_range()
+
+        barrier = FoldBarrier(
+            label_norm_strategy="standard",
+            glm_col_range=glm_col_range,
+            glm_normalize=False,
+        )
+        barrier.fit(graphs, np.array([float(g.y.item()) for g in graphs]))
+        out = barrier.transform_graphs(graphs)
+        for built, transformed in zip(graphs, out):
+            assert torch.allclose(built.x, transformed.x)

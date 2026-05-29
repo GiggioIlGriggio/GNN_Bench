@@ -36,6 +36,7 @@ class FeatureBuilder:
         self._edge_feat_registry: Dict[str, Callable[..., torch.Tensor]] = (
             self._discover_methods("_edge_feat_")
         )
+        self._col_ranges: Dict[str, tuple[int, int]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -60,26 +61,26 @@ class FeatureBuilder:
             If a requested feature name has no matching method.
         """
         feats = []
+        self._col_ranges = {}
+        offset = 0
         for name in self.cfg.node_features:
             if name not in self._node_feat_registry:
                 raise ValueError(
                     f"Unknown node feature '{name}'. "
                     f"Available: {list(self._node_feat_registry.keys())}"
                 )
-            feats.append(self._node_feat_registry[name](graph_data))
+            t = self._node_feat_registry[name](graph_data)
+            self._col_ranges[name] = (offset, offset + t.shape[-1])
+            offset += t.shape[-1]
+            feats.append(t)
         result = torch.cat(feats, dim=-1)
 
-        # Validate node_feat_dim for features whose width equals num_nodes.
-        _NODE_SIZED_FEATURES = {"identity", "fc_row", "sc_row"}
-        if any(name in _NODE_SIZED_FEATURES for name in self.cfg.node_features):
-            actual_dim = result.shape[-1]
-            if actual_dim != self.cfg.node_feat_dim:
-                raise ValueError(
-                    f"node_feat_dim mismatch: config says {self.cfg.node_feat_dim} "
-                    f"but actual feature dim is {actual_dim}. "
-                    f"node_feat_dim must match num_nodes for features: "
-                    f"{_NODE_SIZED_FEATURES & set(self.cfg.node_features)}."
-                )
+        if result.shape[-1] != self.cfg.node_feat_dim:
+            raise ValueError(
+                f"node_feat_dim mismatch: config says {self.cfg.node_feat_dim} "
+                f"but actual feature dim is {result.shape[-1]}. Per-feature "
+                f"widths: { {k: v[1] - v[0] for k, v in self._col_ranges.items()} }."
+            )
 
         return result
 
@@ -119,63 +120,37 @@ class FeatureBuilder:
         """Return the total edge feature dimensionality."""
         return self.cfg.edge_feat_dim
 
-    def get_glm_column_range(self) -> tuple[int, int] | None:
-        """Return the ``(start, end)`` column range of GLM features in ``data.x``.
+    def get_column_range(self, feature_name: str) -> tuple[int, int] | None:
+        """Return the (start, end) column range of a feature in ``data.x``.
 
-        Scans ``cfg.node_features`` in order and sums the per-feature
-        dimensionality to locate where GLM columns begin and end.
-
-        Returns
-        -------
-        tuple[int, int] | None
-            ``(col_start, col_end)`` with ``col_end`` exclusive, or ``None``
-            if no GLM features are enabled.
+        Populated by the most recent :meth:`build_node_features` call. Returns
+        ``None`` if the feature is not enabled. Call ``build_node_features``
+        on at least one graph before querying.
         """
-        glm_names = {"glm_scalar", "glm_diagonal"}
-        enabled_glm = [f for f in self.cfg.node_features if f in glm_names]
-        if not enabled_glm:
+        return self._col_ranges.get(feature_name)
+
+    def get_laplacian_pe_column_range(self) -> tuple[int, int] | None:
+        """Column range of the ``laplacian_pe`` block, or ``None`` if absent."""
+        return self._col_ranges.get("laplacian_pe")
+
+    def get_glm_column_range(self) -> tuple[int, int] | None:
+        """Return the ``(start, end)`` span of GLM columns in ``data.x``.
+
+        Spans whichever of ``glm_scalar`` / ``glm_diagonal`` are enabled,
+        read from the offsets recorded by :meth:`build_node_features`. Returns
+        ``None`` when no GLM contrasts are configured or no GLM feature is
+        enabled.
+        """
+        if not self.cfg.glm_contrasts:
             return None
-
-        num_contrasts = len(self.cfg.glm_contrasts)
-        if num_contrasts == 0:
+        ranges = [
+            self._col_ranges[n]
+            for n in ("glm_scalar", "glm_diagonal")
+            if n in self._col_ranges
+        ]
+        if not ranges:
             return None
-
-        # Map each non-GLM feature to its dimensionality.
-        _SCALAR_FEATURES = {
-            "degree", "strength", "betweenness", "clustering",
-        }
-
-        offset = 0
-        col_start = None
-        col_end = None
-
-        for name in self.cfg.node_features:
-            if name in _SCALAR_FEATURES:
-                dim = 1
-            elif name == "glm_scalar":
-                dim = num_contrasts
-                if col_start is None:
-                    col_start = offset
-                col_end = offset + dim
-            elif name == "glm_diagonal":
-                dim = self.cfg.node_feat_dim  # N * num_contrasts — read from cfg
-                # For diagonal mode the dimension is num_nodes * num_contrasts.
-                # Since num_nodes is fixed (atlas-level), infer from
-                # node_feat_dim minus the sum of all other feature dims.
-                non_glm_dim = sum(
-                    1 for f in self.cfg.node_features if f in _SCALAR_FEATURES
-                )
-                dim = self.cfg.node_feat_dim - non_glm_dim
-                if col_start is None:
-                    col_start = offset
-                col_end = offset + dim
-            else:
-                dim = 1  # default assumption for unknown scalar features
-            offset += dim
-
-        if col_start is not None and col_end is not None:
-            return (col_start, col_end)
-        return None
+        return (min(s for s, _ in ranges), max(e for _, e in ranges))
 
     # ------------------------------------------------------------------
     # Built-in node feature methods
@@ -304,6 +279,69 @@ class FeatureBuilder:
             edge_index=graph_data.sc_edge_index,
             edge_attr=graph_data.sc_edge_attr,
         )
+
+    def _node_feat_cycle_counts(self, graph_data: RawGraphData) -> torch.Tensor:
+        """ID-GNN-Fast cycle counts: log1p of [A^l]_vv for l = 2..L.
+
+        Computed on the binarized adjacency. ``L = cfg.cycle_max_length``.
+        Returns ``[N, L-1]``. l=1 is omitted (always 0 without self-loops).
+
+        Raises
+        ------
+        ValueError
+            If the binarized graph is fully dense (counts identical -> useless).
+        """
+        A = self._binary_adjacency(graph_data)
+        N = graph_data.num_nodes
+        self._check_sparse(A, N, "cycle_counts")
+        L = self.cfg.cycle_max_length
+        cols: List[torch.Tensor] = []
+        A_power = A.clone()           # A^1
+        for _ in range(2, L + 1):
+            A_power = A_power @ A      # A^l
+            cols.append(torch.diagonal(A_power))
+        counts = torch.stack(cols, dim=-1)  # [N, L-1]
+        return torch.log1p(counts)
+
+    def _node_feat_laplacian_pe(self, graph_data: RawGraphData) -> torch.Tensor:
+        """Laplacian positional encoding: k eigenvectors of the smallest
+        non-zero eigenvalues of the symmetric normalized Laplacian.
+
+        Computed on the binarized adjacency. ``k = cfg.laplacian_pe_dim``.
+        Returns ``[N, k]``. Build-time signs are the deterministic
+        ``numpy.linalg.eigh`` output; sign-flip augmentation is applied at
+        train time by the Trainer (eigenvector signs are arbitrary).
+
+        Raises
+        ------
+        ValueError
+            If the binarized graph is fully dense (constant PE) or
+            disconnected (multiple zero eigenvalues corrupt the selection).
+        """
+        A = self._binary_adjacency(graph_data)
+        N = graph_data.num_nodes
+        k = self.cfg.laplacian_pe_dim
+        self._check_sparse(A, N, "laplacian_pe")
+
+        deg = A.sum(dim=1)
+        d_inv_sqrt = deg.clamp(min=1.0).pow(-0.5)
+        L = torch.eye(N) - d_inv_sqrt.unsqueeze(1) * A * d_inv_sqrt.unsqueeze(0)
+
+        eigvals, eigvecs = np.linalg.eigh(L.numpy())  # ascending order
+        # numerical zero: true lambda_0 ~ 5e-8; Fiedler value >= ~1e-5 for realistic graphs.
+        num_zero = int((eigvals < 1e-6).sum())  # multiplicity of 0 == #components
+        if num_zero > 1:
+            raise ValueError(
+                f"'laplacian_pe' requires a connected graph but found "
+                f"{num_zero} connected components (zero eigenvalues). "
+                "Tighten dataset.edge_threshold_value or check the data."
+            )
+
+        pe = torch.from_numpy(eigvecs[:, 1:k + 1]).float()  # skip trivial
+        if pe.shape[1] < k:  # tiny graph: pad missing eigenvectors with zeros
+            pad = torch.zeros(N, k - pe.shape[1], dtype=torch.float32)
+            pe = torch.cat([pe, pad], dim=-1)
+        return pe
 
     # ------------------------------------------------------------------
     # GLM map node feature methods
@@ -447,6 +485,35 @@ class FeatureBuilder:
                 parts.append(diag)
 
         return torch.cat(parts, dim=-1)
+
+    def _binary_adjacency(self, graph_data: RawGraphData) -> torch.Tensor:
+        """Dense 0/1 symmetric adjacency (no self-loops) from primary edges.
+
+        Used **only** by topology-derived features (laplacian_pe, cycle_counts);
+        the graph's weighted edge_attr is untouched everywhere else.
+        """
+        edge_index, _ = self._get_primary_edges(graph_data)
+        N = graph_data.num_nodes
+        A = torch.zeros(N, N, dtype=torch.float32)
+        if edge_index is None or edge_index.shape[1] == 0:
+            return A
+        src, dst = edge_index[0], edge_index[1]
+        A[src, dst] = 1.0
+        A[dst, src] = 1.0
+        A.fill_diagonal_(0.0)
+        return A
+
+    def _check_sparse(self, A: torch.Tensor, N: int, feature: str) -> None:
+        """Raise if the binarized adjacency is fully dense (constant feature)."""
+        if N <= 1:
+            return
+        off_diag_frac = A.sum() / float(N * (N - 1))
+        if torch.isclose(off_diag_frac, torch.tensor(1.0)):
+            raise ValueError(
+                f"'{feature}' requires a thresholded (sparse) graph: the "
+                f"binarized adjacency is fully dense, so the feature is "
+                f"constant/uninformative. Set dataset.edge_threshold_mode."
+            )
 
     def _connectivity_profile(
         self,

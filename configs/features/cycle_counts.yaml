@@ -1,0 +1,24 @@
+# ID-GNN-Fast cycle-count identity features: log1p([A^l]_vv) for l = 2..L.
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# Requires a thresholded (sparse) graph: build raises on a fully-dense
+# adjacency (counts would be identical across nodes).
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=cycle_counts ...
+
+node_features:
+  - cycle_counts
+edge_features:
+  - weight
+
+# node_feat_dim = cycle_max_length - 1 (l in {2,...,L}).
+cycle_max_length: 4
+node_feat_dim: 3
+edge_feat_dim: 1
+
+# GLM disabled.
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts: []
+glm_normalize: false
