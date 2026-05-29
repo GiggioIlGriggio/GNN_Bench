@@ -1,0 +1,30 @@
+# One-hot identity encoding concatenated with the per-node GLM scalar value.
+# Maps to src.configs.feature_config.FeatureConfig.
+#
+# node_features = [identity, glm_scalar]:
+#   identity    -> 400-wide binary one-hot (node position).
+#   glm_scalar  -> num_contrasts scalar GLM activation value(s) per node.
+# identity occupies columns [0:400); glm_scalar occupies [400:400+num_contrasts).
+# The GLM slice is z-scored per training fold by the FoldBarrier when
+# glm_normalize is true (leak-free).
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=identity_glm_scalar ...
+
+node_features:
+  - identity
+  - glm_scalar
+edge_features:
+  - weight
+
+# node_feat_dim = identity(400) + glm_scalar(num_contrasts).
+# With 1 contrast: 400 + 1 = 401.
+node_feat_dim: 401
+edge_feat_dim: 1
+
+# GLM settings (scalar value per node, z-scored per fold).
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts:
+  - contrast-2back_vs_0back
+glm_normalize: true
