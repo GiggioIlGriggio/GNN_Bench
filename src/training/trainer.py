@@ -26,6 +26,21 @@ from src.configs.trainer_config import TrainerConfig
 from src.models.base_model import BrainGNN
 from src.training.metrics import MetricDict, compute_metrics
 
+# Validation metrics where higher is better. Anything else (mae, rmse, loss)
+# is treated as lower-is-better. Used to make best-epoch selection, early
+# stopping, and the plateau LR scheduler direction-aware.
+_MAXIMIZE_METRICS = frozenset({"r2", "pearson_r"})
+
+
+def _monitor_maximizes(early_stopping_metric: str) -> bool:
+    """Whether ``early_stopping_metric`` is higher-is-better.
+
+    The metric name may carry a ``val_`` prefix (e.g. ``"val_r2"``); it is
+    stripped before lookup so it matches the keys produced by
+    :func:`src.training.metrics.compute_metrics`.
+    """
+    return early_stopping_metric.replace("val_", "") in _MAXIMIZE_METRICS
+
 if TYPE_CHECKING:
     from src.logging.wandb_logger import WandbLogger
 
@@ -224,7 +239,12 @@ class Trainer:
         optimizer = self._build_optimizer(model)
         scheduler = self._build_scheduler(optimizer)
 
-        best_val_metric = float("inf")
+        monitor_key = self.cfg.early_stopping_metric.replace("val_", "")
+        # Higher-is-better metrics (r2, pearson_r) must be maximised; everything
+        # else (mae, rmse, loss) minimised. Seed the running best at the worst
+        # possible value for the direction so the first epoch always improves.
+        maximize = _monitor_maximizes(self.cfg.early_stopping_metric)
+        best_val_metric = float("-inf") if maximize else float("inf")
         best_epoch = 0
         best_val_metrics: MetricDict = {}
         best_model_state_dict: dict = {}
@@ -232,8 +252,6 @@ class Trainer:
         history: Dict[str, List[float]] = {}
         last_epoch = 0
         last_val_metrics: MetricDict = {}
-
-        monitor_key = self.cfg.early_stopping_metric.replace("val_", "")
 
         _console.rule(f"[bold cyan]Fold {fold_idx}[/]", style="cyan dim")
 
@@ -312,9 +330,12 @@ class Trainer:
                 except (NotImplementedError, Exception):
                     raise RuntimeError("Logging failed — check your logger implementation") from None
 
-                # Early stopping
+                # Early stopping — compare in the metric's natural direction.
                 monitored = val_metrics.get(monitor_key, val_metrics["mae"])
-                is_best = monitored < best_val_metric - self.cfg.early_stopping_min_delta
+                if maximize:
+                    is_best = monitored > best_val_metric + self.cfg.early_stopping_min_delta
+                else:
+                    is_best = monitored < best_val_metric - self.cfg.early_stopping_min_delta
                 if is_best:
                     best_val_metric = monitored
                     best_epoch = epoch
@@ -471,6 +492,13 @@ class Trainer:
         if sched == "step":
             return torch.optim.lr_scheduler.StepLR(optimizer, **params)
         if sched == "plateau":
+            # The plateau scheduler steps on the monitored val metric (see fit),
+            # so its reduction direction must match: "max" for r2/pearson_r,
+            # "min" for mae/rmse. An explicit mode in scheduler_params wins.
+            params.setdefault(
+                "mode",
+                "max" if _monitor_maximizes(self.cfg.early_stopping_metric) else "min",
+            )
             return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, **params)
         raise ValueError(f"Unknown scheduler: {self.cfg.scheduler}")
 

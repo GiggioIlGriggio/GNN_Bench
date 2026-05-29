@@ -533,6 +533,113 @@ class TestRandomSignFlip:
 
 
 # ---------------------------------------------------------------------------
+# Trainer best-epoch direction (regression for the nested-CV refit_epochs=1 bug)
+# ---------------------------------------------------------------------------
+
+class TestTrainerBestEpochDirection:
+    """``Trainer.fit`` must track the best epoch in the metric's natural direction.
+
+    Regression for the bug where best-epoch selection was hardcoded to
+    minimisation (``best_val_metric = +inf``; ``is_best = monitored < best``).
+    With a higher-is-better monitor like ``val_r2`` that froze ``best_epoch`` at
+    epoch 0 (the lowest R²), so every nested-CV refit ran for exactly one epoch
+    (``refit_epochs = best_epoch + 1 = 1``) and the tested model predicted the
+    mean → outer-test R² ≈ 0.
+    """
+
+    def _build(self, monitor: str, val_curve, patience=None):
+        """Drive the real ``Trainer.fit`` with a scripted validation curve.
+
+        ``evaluate`` is replaced so the per-epoch val metrics follow ``val_curve``
+        deterministically, isolating the best-epoch decision logic from training
+        stochasticity while still exercising the genuine ``fit`` loop.
+        """
+        import torch
+        from torch_geometric.data import Data
+        from torch_geometric.loader import DataLoader
+        from torch_geometric.utils import scatter
+        from src.configs.logging_config import LoggingConfig
+        from src.configs.trainer_config import TrainerConfig
+        from src.logging.wandb_logger import WandbLogger
+        from src.training.trainer import Trainer
+
+        class _TinyModel(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.lin = torch.nn.Linear(4, 1)
+
+            def forward(self, batch):
+                pooled = scatter(batch.x, batch.batch, dim=0, reduce="mean")
+                return self.lin(pooled)
+
+            def auxiliary_loss(self):
+                return None
+
+        graphs = []
+        for s in range(6):
+            x = torch.arange(1, 4 * 5 + 1, dtype=torch.float32).reshape(5, 4) + s
+            ei = torch.tensor([[0, 1, 2, 3], [1, 2, 3, 4]], dtype=torch.int64)
+            g = Data(x=x, edge_index=ei, edge_attr=torch.ones(4, 1),
+                     y=torch.tensor([float(s)]), num_nodes=5)
+            graphs.append(g)
+        train_loader = DataLoader(graphs[:4], batch_size=2)
+        val_loader = DataLoader(graphs[4:], batch_size=2)
+
+        n = len(val_curve)
+        cfg = TrainerConfig(
+            epochs=n,
+            device="cpu",
+            scheduler="none",
+            early_stopping_metric=monitor,
+            # Never let patience trigger an early stop — we want all epochs to run
+            # so the assertion is purely about the best-epoch direction.
+            early_stopping_patience=patience if patience is not None else n + 1,
+        )
+        trainer = Trainer(cfg=cfg, logger=WandbLogger(LoggingConfig(enabled=False)))
+
+        scripted = iter(val_curve)
+        trainer.evaluate = lambda *a, **k: dict(next(scripted))
+
+        result = trainer.fit(
+            model=_TinyModel(),
+            train_loader=train_loader,
+            val_loader=val_loader,
+            inverse_transform=lambda arr: arr,
+            fold_idx=0,
+        )
+        return result
+
+    def test_maximize_metric_tracks_rising_curve(self) -> None:
+        """val_r2 rising 0→0.45 over 4 epochs → best_epoch must land on the last."""
+        val_curve = [
+            {"mae": 1.0, "rmse": 1.2, "r2": 0.00, "pearson_r": 0.10},
+            {"mae": 0.7, "rmse": 0.9, "r2": 0.20, "pearson_r": 0.40},
+            {"mae": 0.5, "rmse": 0.6, "r2": 0.35, "pearson_r": 0.60},
+            {"mae": 0.4, "rmse": 0.5, "r2": 0.45, "pearson_r": 0.70},
+        ]
+        result = self._build("val_r2", val_curve)
+        # The buggy minimisation-only code freezes best_epoch at 0.
+        assert result.best_epoch == 3, (
+            f"best_epoch={result.best_epoch}; expected the highest-R² epoch (3)"
+        )
+        assert result.best_epoch > 0
+        assert result.best_val_metrics["r2"] == 0.45
+
+    def test_minimize_metric_still_tracks_falling_then_rising(self) -> None:
+        """val_mae minimum in the middle → best_epoch is that epoch (guards the
+        existing minimise path is untouched by the fix)."""
+        val_curve = [
+            {"mae": 1.0, "rmse": 1.1, "r2": 0.05, "pearson_r": 0.2},
+            {"mae": 0.4, "rmse": 0.5, "r2": 0.30, "pearson_r": 0.5},  # min MAE
+            {"mae": 0.6, "rmse": 0.7, "r2": 0.25, "pearson_r": 0.4},
+            {"mae": 0.9, "rmse": 1.0, "r2": 0.10, "pearson_r": 0.3},
+        ]
+        result = self._build("val_mae", val_curve)
+        assert result.best_epoch == 1
+        assert result.best_val_metrics["mae"] == 0.4
+
+
+# ---------------------------------------------------------------------------
 # Trainer sign-flip is train-only (safety-critical invariant)
 # ---------------------------------------------------------------------------
 
