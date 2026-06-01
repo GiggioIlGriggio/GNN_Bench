@@ -36,7 +36,7 @@ PYTHONPATH="$(pwd)" singularity exec --nv \
     --bind /data/bdip_ssd/al5165/GNNBenchV2/data:/data/bdip_ssd/al5165/GNNBenchV2/data \
     "$SIF" \
     python scripts/run_experiment.py \
-        logging.project=orbitglm \
+        'logging.project="Baseline Launches"' \
         logging.entity=teampolpetta \
         ${RUN_ARGS:-} \
         ${DATASET_ROOT_OVERRIDE:-}
