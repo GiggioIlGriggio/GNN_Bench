@@ -399,6 +399,7 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     else:
         from src.training.nested_cross_validation import NestedCrossValidator
+        from src.training.run_identity import build_run_name
 
         def nested_model_factory(trial_model_cfg):
             return get_model(
@@ -425,7 +426,7 @@ def main(cfg: DictConfig) -> None:
             labels=labels,
             base_model_cfg=model_cfg,
             logger=logger,
-            run_name=cfg.experiment_name,
+            run_name=build_run_name(cfg.experiment_name),
             label_builder=label_builder,
             label_components=label_components,
             glm_col_range=glm_col_range,
