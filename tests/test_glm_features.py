@@ -211,6 +211,156 @@ class TestGLMDiagonalFeature:
 
 
 # ---------------------------------------------------------------------------
+# GLM value permutation (value <-> identity decoupling)
+# ---------------------------------------------------------------------------
+
+def _expected_perm(subject_id: str, num_nodes: int, regime: str, seed: int) -> np.ndarray:
+    """Reference permutation for the spec — mirrors the intended seeding.
+
+    This is the *contract*: the implementation MUST derive its permutation
+    this way so the corruption is reproducible across processes/machines
+    (builtin ``hash()`` would not be). The test deliberately re-derives it
+    independently to lock the formula.
+    """
+    import hashlib
+
+    if regime == "fixed":
+        rng_seed = seed
+    elif regime == "per_subject":
+        digest = hashlib.sha256(subject_id.encode("utf-8")).digest()
+        rng_seed = (int.from_bytes(digest[:8], "big") ^ seed) & 0xFFFFFFFFFFFFFFFF
+    else:
+        raise ValueError(regime)
+    return np.random.default_rng(rng_seed).permutation(num_nodes)
+
+
+class TestGLMValuePermute:
+    """Tests for ``glm_value_permute`` — scrambling GLM values across nodes
+    while leaving the one-hot identity support intact."""
+
+    def _diag_cfg(self, N: int, regime: str = "none", seed: int = 0) -> FeatureConfig:
+        return FeatureConfig(
+            node_features=["glm_diagonal"],
+            edge_features=["weight"],
+            node_feat_dim=N,
+            edge_feat_dim=1,
+            glm_contrasts=["contrast-A"],
+            glm_value_permute=regime,
+            glm_permute_seed=seed,
+        )
+
+    def test_none_is_byte_identical_to_diag(self) -> None:
+        """Default ``none`` must reproduce plain ``diag(vals)`` exactly — this
+        is the invariant that makes reusing job 360744 (the pre-knob run)
+        legitimate."""
+        N = 7
+        fb = FeatureBuilder(self._diag_cfg(N, regime="none"))
+        vals = np.random.randn(N).astype(np.float32)
+        raw = _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals})
+        out = fb.build_node_features(raw)
+        assert torch.equal(out, torch.diag(torch.tensor(vals)))
+
+    def test_default_regime_is_none(self) -> None:
+        """A FeatureConfig built without the knob defaults to no permutation."""
+        cfg = FeatureConfig(
+            node_features=["glm_diagonal"], edge_features=["weight"],
+            node_feat_dim=5, edge_feat_dim=1, glm_contrasts=["contrast-A"],
+        )
+        assert cfg.glm_value_permute == "none"
+        assert cfg.glm_permute_seed == 0
+
+    def test_permute_preserves_one_hot_support(self) -> None:
+        """Off-diagonal stays zero; the diagonal is a permutation of vals
+        (same multiset) — identity support intact, only magnitude scrambled."""
+        N = 6
+        fb = FeatureBuilder(self._diag_cfg(N, regime="per_subject", seed=0))
+        vals = np.arange(1, N + 1).astype(np.float32)  # distinct, non-zero
+        raw = _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals},
+                              subject_id="sub-XYZ")
+        out = fb.build_node_features(raw)
+
+        off = ~torch.eye(N, dtype=torch.bool)
+        assert (out[off] == 0).all()
+        diag = torch.diagonal(out)
+        assert sorted(diag.tolist()) == sorted(vals.tolist())  # same multiset
+
+    def test_per_subject_matches_sha256_contract(self) -> None:
+        """The per-subject permutation must equal the independently-derived
+        sha256-seeded permutation — proving deterministic, cross-process
+        seeding (NOT builtin hash())."""
+        N = 9
+        sid = "sub-042"
+        fb = FeatureBuilder(self._diag_cfg(N, regime="per_subject", seed=0))
+        vals = np.arange(10, 10 + N).astype(np.float32)
+        raw = _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals},
+                              subject_id=sid)
+        out = torch.diagonal(fb.build_node_features(raw))
+        perm = _expected_perm(sid, N, "per_subject", 0)
+        assert torch.equal(out, torch.tensor(vals[perm]))
+
+    def test_per_subject_differs_across_subjects(self) -> None:
+        """Two different subjects get different scrambles under per_subject."""
+        N = 12
+        fb = FeatureBuilder(self._diag_cfg(N, regime="per_subject", seed=0))
+        vals = np.arange(N).astype(np.float32)
+        a = torch.diagonal(fb.build_node_features(
+            _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="sub-A")))
+        b = torch.diagonal(fb.build_node_features(
+            _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="sub-B")))
+        assert not torch.equal(a, b)
+
+    def test_fixed_is_identical_across_subjects(self) -> None:
+        """Under ``fixed`` every subject gets the SAME permutation (stable but
+        wrong code) — the H3 probe."""
+        N = 12
+        fb = FeatureBuilder(self._diag_cfg(N, regime="fixed", seed=0))
+        vals = np.arange(N).astype(np.float32)
+        a = torch.diagonal(fb.build_node_features(
+            _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="sub-A")))
+        b = torch.diagonal(fb.build_node_features(
+            _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="sub-B")))
+        assert torch.equal(a, b)
+        assert torch.equal(a, torch.tensor(vals[_expected_perm("", N, "fixed", 0)]))
+
+    def test_seed_changes_permutation(self) -> None:
+        """Different glm_permute_seed yields a different fixed permutation."""
+        N = 20
+        vals = np.arange(N).astype(np.float32)
+        raw = lambda: _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="s")
+        s0 = torch.diagonal(FeatureBuilder(self._diag_cfg(N, "fixed", 0)).build_node_features(raw()))
+        s1 = torch.diagonal(FeatureBuilder(self._diag_cfg(N, "fixed", 1)).build_node_features(raw()))
+        assert not torch.equal(s0, s1)
+
+    def test_scalar_mode_also_permuted(self) -> None:
+        """The knob applies identically to scalar mode (vals permuted before
+        placement)."""
+        N = 8
+        cfg = FeatureConfig(
+            node_features=["glm_scalar"], edge_features=["weight"],
+            node_feat_dim=1, edge_feat_dim=1, glm_contrasts=["contrast-A"],
+            glm_value_permute="fixed", glm_permute_seed=3,
+        )
+        fb = FeatureBuilder(cfg)
+        vals = np.arange(100, 100 + N).astype(np.float32)
+        out = fb.build_node_features(
+            _make_raw_graph(num_nodes=N, glm_maps={"contrast-A": vals}, subject_id="s")).squeeze(-1)
+        assert torch.equal(out, torch.tensor(vals[_expected_perm("", N, "fixed", 3)]))
+
+    def test_identity_feature_never_permuted(self) -> None:
+        """The permute knob must never touch the one-hot identity feature —
+        identity stays I_N regardless of glm_value_permute."""
+        N = 6
+        cfg = FeatureConfig(
+            node_features=["identity"], edge_features=["weight"],
+            node_feat_dim=N, edge_feat_dim=1,
+            glm_value_permute="per_subject", glm_permute_seed=0,
+        )
+        fb = FeatureBuilder(cfg)
+        out = fb.build_node_features(_make_raw_graph(num_nodes=N, subject_id="s"))
+        assert torch.equal(out, torch.eye(N))
+
+
+# ---------------------------------------------------------------------------
 # GLM column range
 # ---------------------------------------------------------------------------
 
