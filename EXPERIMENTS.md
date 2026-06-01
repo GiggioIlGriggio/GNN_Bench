@@ -27,6 +27,95 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-01 — GLM value↔identity decoupling (value-permutation ablation)
+
+**Goal.** Decouple the one-hot **node-identity structure** of `glm_diagonal` from
+the **GLM activation magnitude** placed on it, on PNC SC → `VWM_overall_dprime`,
+GCN + nested CV fixed. Tests thesis
+`glm-value-identity-decoupling-permutation` (H1: the diagonal's signal is the
+one-hot distinctness prior, not the value/binding). Introduces the additive
+`features.glm_value_permute` knob (`none|per_subject|fixed`, seeded by
+`glm_permute_seed`): GLM values are permuted across nodes *before* placement,
+one-hot support intact. `none` is a byte-identical no-op, so the 2026-05-29
+`glm_diagonal` run (job 360744) is reused unchanged as the correct-binding arm.
+
+**Run matrix (4 arms; 3 new + 1 reused).** All 400-wide, used standalone.
+
+| # | experiment_name | features preset | value binding |
+|---|---|---|---|
+| 1 | `gcn-pnc-sc-vwm-identity`          | `identity`              | — (constant 1.0; no GLM) |
+| 2 | `gcn-pnc-sc-vwm-glmdiag` (REUSE 360744) | `glm_diagonal`    | correct (π=e) |
+| 3 | `gcn-pnc-sc-vwm-glmdiag-permsubj` | `glm_diagonal_permsubj` | scrambled, fresh π per subject |
+| 4 | `gcn-pnc-sc-vwm-glmdiag-permfixed`| `glm_diagonal_permfixed`| scrambled, one shared π |
+
+**Pre-registered significance rule (locked before reading results).** Primary:
+ΔR² counts as real only if it exceeds the *larger* arm's fold std (≈0.11).
+Secondary/tiebreak: corrected resampled t-test (`statistical_tests.py`,
+ADR-0008), p<0.05. Degeneracy guard: if arm 1 (`identity`) scores R²≈0 on VWM
+the matrix is uninformative — re-examine GCN/protocol before reading the GLM arms.
+
+**Recipe notes / drift from the thesis text.**
+- **Epochs:** thesis recipe says "300 epochs", but the reused arm 2 (360744)
+  ran on the default `trainer.epochs=100` (unchanged since the initial commit).
+  To stay comparable, arms 1/3/4 also inherit the default 100 (no override).
+- **wandb project:** `slurm/train.sh` now hardcodes `logging.project="Baseline
+  Launches"` (added after the 2026-05-29 batch). Arms 1/3/4 force
+  `logging.project=orbitglm` via RUN_ARGS so they land with arm 2 (360744).
+- `glm_normalize=true` on all GLM arms (baked into the perm presets), matching
+  the 2026-05-29 batch. Under `per_subject` each column mixes nodes' values
+  across subjects by construction — the intended corruption.
+
+**Shared recipe.** `dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2`, `--time=2-00:00:00`, wandb entity `teampolpetta`.
+
+### gcn-pnc-sc-vwm-identity
+- **Date:** 2026-06-01
+- **Description:** Pure one-hot identity baseline on VWM (no GLM channel) — the
+  distinctness-prior floor the GLM-diagonal arms are predicted (H1) to track.
+  New: the only prior `identity` baseline (360724) was on `age`, not VWM.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity` (+ shared recipe). glm_normalize n/a (no GLM).
+- **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
+- **Job ID:** 360785 (`-J gcn-pnc-sc-vwm-identity`), gpunode01/rtx2080.
+- **wandb run:** orbitglm/teampolpetta — TBD
+- **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
+- **Results:** TBD
+
+### gcn-pnc-sc-vwm-glmdiag (reused — correct binding, π=e)
+- **Date:** 2026-05-29 (reuse job 360744, conditions unchanged).
+- **Description:** GLM-diagonal with correct value↔node binding. Arm 2 of the
+  decoupling matrix; reused because `glm_value_permute=none` is a no-op.
+- **Results:** pearson_r 0.487 ± 0.057, r2 0.176 ± 0.112 (50 outer folds). See 2026-05-29 batch.
+
+### gcn-pnc-sc-vwm-glmdiag-permsubj
+- **Date:** 2026-06-01
+- **Description:** GLM-diagonal, one-hot intact, GLM values permuted by a FRESH
+  random π per subject (seeded from the subject id). Destroys usable
+  value↔identity binding entirely.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=glm_diagonal_permsubj` (bakes
+  `glm_value_permute=per_subject glm_permute_seed=0 glm_normalize=true`) (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
+- **Job ID:** 360783 (`-J gcn-pnc-sc-vwm-glmdiag-permsubj`), gpunode03/rtxa6000.
+- **wandb run:** orbitglm/teampolpetta — TBD
+- **Command:** `cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J gcn-pnc-sc-vwm-glmdiag-permsubj --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-glmdiag-permsubj features=glm_diagonal_permsubj dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
+- **Results:** TBD
+
+### gcn-pnc-sc-vwm-glmdiag-permfixed
+- **Date:** 2026-06-01
+- **Description:** GLM-diagonal, one-hot intact, GLM values permuted by ONE
+  shared fixed π across all subjects. Binding is wrong but stable (H3 probe:
+  can the GCN learn to invert a consistent-but-wrong value→node code?).
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=glm_diagonal_permfixed` (bakes
+  `glm_value_permute=fixed glm_permute_seed=0 glm_normalize=true`) (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
+- **Job ID:** 360784 (`-J gcn-pnc-sc-vwm-glmdiag-permfixed`), gpunode01/v100.
+- **wandb run:** orbitglm/teampolpetta — TBD
+- **Command:** `cluster-submit --node gpunode01 --gpu v100 slurm/train.sh -J gcn-pnc-sc-vwm-glmdiag-permfixed --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-glmdiag-permfixed features=glm_diagonal_permfixed dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
+- **Results:** TBD
+
+---
+
 ## Batch 2026-05-29 — VWM GLM node-feature encodings (7-run matrix)
 
 **Goal.** Compare GLM-derived node-feature encodings for predicting working
