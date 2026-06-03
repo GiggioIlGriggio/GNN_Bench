@@ -67,6 +67,51 @@ the matrix is uninformative — re-examine GCN/protocol before reading the GLM a
 
 **Shared recipe.** `dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2`, `--time=2-00:00:00`, wandb entity `teampolpetta`.
 
+**Results summary** (sorted by mean-of-folds R², the tuning metric; N=50 outer
+folds = 10 reps × 5 folds; pooled = one R² over all 9,400 out-of-fold
+predictions vs the global mean). All 4 arms `COMPLETED`. `±` is dispersion across
+folds, **not** a standard error.
+
+| experiment_name | Job | value binding | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| `gcn-pnc-sc-vwm-glmdiag-permfixed` | 360784 | scrambled, one shared π | **0.194 ± 0.093** | 0.197 | 0.488 ± 0.073 | 0.493 ± 0.032 | 0.640 ± 0.039 | [2hds44mj](https://wandb.ai/teampolpetta/orbitglm/runs/2hds44mj) |
+| `gcn-pnc-sc-vwm-glmdiag` (reuse 360744) | 360744 | correct (π=e) | 0.176 ± 0.112 | n/a¹ | 0.487 ± 0.057 | 0.499 ± 0.039 | 0.647 ± 0.044 | [97893t1o](https://wandb.ai/teampolpetta/orbitglm/runs/97893t1o) |
+| `gcn-pnc-sc-vwm-glmdiag-permsubj` | 360783 | scrambled, fresh π per subject | 0.006 ± 0.082 | n/a¹ | 0.246 ± 0.088 | 0.551 ± 0.027 | 0.711 ± 0.035 | [1biyzrr7](https://wandb.ai/teampolpetta/orbitglm/runs/1biyzrr7) |
+| `gcn-pnc-sc-vwm-identity` | 360785 | — (constant 1.0; no GLM) | −0.028 ± 0.181 | n/a¹ | 0.260 ± 0.115 | 0.560 ± 0.053 | 0.720 ± 0.059 | [3oyjdbbg](https://wandb.ai/teampolpetta/orbitglm/runs/3oyjdbbg) |
+
+¹ Pooled R² is recoverable **only** for permfixed (360784). This batch ran on
+the pre-ADR-0012 code (branch base `c80b62a`), which writes every run's per-fold
+predictions to one shared `checkpoints/nested_cv_result.json`. The three new arms
+ran concurrently and overwrote each other; only the last to finish (permfixed,
+2026-06-02 12:02) survives. permsubj/identity predictions are gone, and the
+reused arm 2 (360744) was overwritten back in the 2026-05-29 batch.
+
+**Pre-registered rule outcomes.** ⚠️ **The degeneracy guard fired:** arm 1
+`identity` scores R²≈0 (−0.028 ± 0.181). Per the locked rule, the matrix is to be
+treated as *uninformative pending a GCN/protocol re-examination* — do not read the
+ordering below as a confirmed finding. Caveat to the caveat: the GLM arms are
+**not** globally degenerate (permfixed 0.194, glmdiag 0.176 on the same pipeline),
+so this is a real "pure one-hot carries no VWM signal" floor, not a broken run.
+Applying the primary ΔR²>fold-std rule anyway yields a clean dichotomy —
+{permfixed ≈ glmdiag} ≫ {permsubj ≈ identity ≈ 0}:
+- permfixed − identity = 0.222 > 0.181 (real); glmdiag − permsubj = 0.170 > 0.112 (real).
+- permfixed − glmdiag = 0.018 (not real); permsubj − identity = 0.034 (not real).
+
+**Provisional reading (treat as hypothesis, not result).** If the floor is
+trusted, the signal lives in **cross-subject-consistent per-node value structure**,
+not in the biologically-correct binding *or* the one-hot distinctness prior alone:
+a fixed-but-wrong permutation (permfixed) matches correct binding, a per-subject
+permutation (permsubj) collapses to the identity floor, and pure one-hot
+(identity, no values) carries nothing. This **refutes H1 as stated** ("the
+diagonal's signal is the one-hot distinctness prior") — distinctness alone (arm 1)
+is ≈0. Hard caveats: (1) this pipeline is nondeterministic / not run-to-run
+reproducible (see main-branch
+[`reports/2026-05-29-vwm-glm-node-features-run-to-run-instability.md`](reports/2026-05-29-vwm-glm-node-features-run-to-run-instability.md)),
+so this is a single draw; (2) the pre-registered ADR-0008 corrected resampled
+t-test is **not computable** for the key pairs — only permfixed retained per-fold
+predictions. Re-running the batch on the ADR-0012 per-run-checkpoint code (now on
+`main`) would make both the corrected test and all-arm pooled R² recoverable.
+
 ### gcn-pnc-sc-vwm-identity
 - **Date:** 2026-06-01
 - **Description:** Pure one-hot identity baseline on VWM (no GLM channel) — the
@@ -76,9 +121,9 @@ the matrix is uninformative — re-examine GCN/protocol before reading the GLM a
 - **Changed parameters:** `features=identity` (+ shared recipe). glm_normalize n/a (no GLM).
 - **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
 - **Job ID:** 360785 (`-J gcn-pnc-sc-vwm-identity`), gpunode01/rtx2080.
-- **wandb run:** orbitglm/teampolpetta — TBD
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity` — https://wandb.ai/teampolpetta/orbitglm/runs/3oyjdbbg
 - **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
-- **Results:** TBD
+- **Results:** pearson_r 0.260 ± 0.115, r2 −0.028 ± 0.181 (mean-of-folds), r2 n/a (pooled — pre-ADR-0012, shared `checkpoints/` predictions overwritten by 360784), mae 0.560 ± 0.053, rmse 0.720 ± 0.059 (50 outer folds). **Degeneracy guard fires: identity floor ≈ 0.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/3oyjdbbg)
 
 ### gcn-pnc-sc-vwm-glmdiag (reused — correct binding, π=e)
 - **Date:** 2026-05-29 (reuse job 360744, conditions unchanged).
@@ -96,9 +141,9 @@ the matrix is uninformative — re-examine GCN/protocol before reading the GLM a
   `glm_value_permute=per_subject glm_permute_seed=0 glm_normalize=true`) (+ shared recipe).
 - **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
 - **Job ID:** 360783 (`-J gcn-pnc-sc-vwm-glmdiag-permsubj`), gpunode03/rtxa6000.
-- **wandb run:** orbitglm/teampolpetta — TBD
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-glmdiag-permsubj` — https://wandb.ai/teampolpetta/orbitglm/runs/1biyzrr7
 - **Command:** `cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J gcn-pnc-sc-vwm-glmdiag-permsubj --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-glmdiag-permsubj features=glm_diagonal_permsubj dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
-- **Results:** TBD
+- **Results:** pearson_r 0.246 ± 0.088, r2 0.006 ± 0.082 (mean-of-folds), r2 n/a (pooled — pre-ADR-0012, shared `checkpoints/` predictions overwritten by 360784), mae 0.551 ± 0.027, rmse 0.711 ± 0.035 (50 outer folds). Per-subject scramble collapses to the identity floor. [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/1biyzrr7)
 
 ### gcn-pnc-sc-vwm-glmdiag-permfixed
 - **Date:** 2026-06-01
@@ -110,9 +155,9 @@ the matrix is uninformative — re-examine GCN/protocol before reading the GLM a
   `glm_value_permute=fixed glm_permute_seed=0 glm_normalize=true`) (+ shared recipe).
 - **Commit SHA (DEPLOY_SHA):** `c2e973ba9952d2054d43476ec270e0f969ee074b`
 - **Job ID:** 360784 (`-J gcn-pnc-sc-vwm-glmdiag-permfixed`), gpunode01/v100.
-- **wandb run:** orbitglm/teampolpetta — TBD
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-glmdiag-permfixed` — https://wandb.ai/teampolpetta/orbitglm/runs/2hds44mj
 - **Command:** `cluster-submit --node gpunode01 --gpu v100 slurm/train.sh -J gcn-pnc-sc-vwm-glmdiag-permfixed --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-glmdiag-permfixed features=glm_diagonal_permfixed dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2"`
-- **Results:** TBD
+- **Results:** pearson_r 0.488 ± 0.073, r2 0.194 ± 0.093 (mean-of-folds), r2 0.197 (pooled, N=9400), mae 0.493 ± 0.032, rmse 0.640 ± 0.039 (50 outer folds). A fixed-but-wrong binding ≈ correct binding. [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/2hds44mj)
 
 ---
 
