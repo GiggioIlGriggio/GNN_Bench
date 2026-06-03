@@ -278,7 +278,12 @@ class NestedCrossValidator:
             self.cfg.hpo_metric,
         )
 
-        ckpt_root = Path(self.cfg.checkpoint_dir)
+        # Per-run checkpoint root (ADR-0012): root artifacts under the unique
+        # run_name so concurrent / sequential runs never clobber each other's
+        # predictions. run_name is "<experiment_name>-<run_uid>" (see
+        # src.training.run_identity); a bare experiment_name would be reused
+        # across re-runs and overwrite prior artifacts.
+        ckpt_root = Path(self.cfg.checkpoint_dir) / run_name
         fold_results: List[FoldResult] = []
 
         # Bin labels once — same bins across all reps (deterministic given the
