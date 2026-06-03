@@ -472,6 +472,10 @@ def main(cfg: DictConfig) -> None:
 
         # Persist a nested_cv_result.json-compatible artifact under the per-run
         # checkpoint dir (ADR-0012), so scripts/pooled_vs_meanfolds.py works unchanged.
+        # NB: unlike nested CV, the legacy CrossValidator writes its per-fold
+        # checkpoints flat under trainer_cfg.checkpoint_dir (not under run_name);
+        # the artifact below is self-contained (carries inline y_true/y_pred), so
+        # the recompute tool needs only this JSON.
         run_name = build_run_name(cfg.experiment_name)
         ckpt_root = Path(trainer_cfg.checkpoint_dir) / run_name
         artifact = build_flat_cv_artifact(
