@@ -36,6 +36,8 @@ from omegaconf import DictConfig, OmegaConf
 
 log = logging.getLogger(__name__)
 
+_VALID_RUNNERS = ("flat_cv", "nested")
+
 
 def select_runner(*, is_sweep: bool, finetuning_enabled: bool, runner: str | None) -> str:
     """Decide which training runner to dispatch.
@@ -53,12 +55,22 @@ def select_runner(*, is_sweep: bool, finetuning_enabled: bool, runner: str | Non
         to the legacy :class:`~src.training.cross_validation.CrossValidator`;
         ``"nested"`` (or ``None``) routes to
         :class:`~src.training.nested_cross_validation.NestedCrossValidator`.
+        An unrecognised value raises ``ValueError``.
 
     Returns
     -------
     str
         One of ``"sweep"``, ``"finetune"``, ``"flat_cv"``, or ``"nested"``.
+
+    Raises
+    ------
+    ValueError
+        If *runner* is not ``None`` and not one of ``_VALID_RUNNERS``.
     """
+    if runner is not None and runner not in _VALID_RUNNERS:
+        raise ValueError(
+            f"Unknown runner={runner!r}. Valid values: {_VALID_RUNNERS} (or unset → 'nested')."
+        )
     if is_sweep:
         return "sweep"
     if finetuning_enabled:
@@ -355,7 +367,7 @@ def main(cfg: DictConfig) -> None:
             )
 
     # ------------------------------------------------------------------
-    # 8) Else if finetuning is enabled → load checkpoint and fine-tune
+    # 8) Finetuning runner → load checkpoint and fine-tune
     # ------------------------------------------------------------------
     elif runner == "finetune":
         from src.finetuning.finetuner import Finetuner

@@ -66,3 +66,21 @@ class TestFinetuningPrecedence:
     def test_finetune_overrides_none(self):
         result = select_runner(is_sweep=False, finetuning_enabled=True, runner=None)
         assert result == "finetune"
+
+
+class TestUnknownRunnerRejected:
+    """Unknown runner= values must raise ValueError, never silently fall through."""
+
+    def test_typo_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown runner"):
+            select_runner(is_sweep=False, finetuning_enabled=False, runner="flat_cvv")
+
+    def test_none_does_not_raise(self):
+        # runner=None is the default/unset case — must never raise.
+        result = select_runner(is_sweep=False, finetuning_enabled=False, runner=None)
+        assert result == "nested"
+
+    def test_nested_string_does_not_raise(self):
+        # runner="nested" is explicit but valid — must never raise.
+        result = select_runner(is_sweep=False, finetuning_enabled=False, runner="nested")
+        assert result == "nested"
