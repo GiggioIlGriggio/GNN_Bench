@@ -37,6 +37,37 @@ from omegaconf import DictConfig, OmegaConf
 log = logging.getLogger(__name__)
 
 
+def select_runner(*, is_sweep: bool, finetuning_enabled: bool, runner: str | None) -> str:
+    """Decide which training runner to dispatch.
+
+    Precedence: sweep (--multirun) > finetuning > flat_cv > nested.
+
+    Parameters
+    ----------
+    is_sweep : bool
+        ``True`` when Hydra is in ``MULTIRUN`` mode (``--multirun`` flag).
+    finetuning_enabled : bool
+        ``True`` when ``finetuning.enabled`` is set in the config.
+    runner : str or None
+        Value of the top-level ``runner`` config key.  ``"flat_cv"`` routes
+        to the legacy :class:`~src.training.cross_validation.CrossValidator`;
+        ``"nested"`` (or ``None``) routes to
+        :class:`~src.training.nested_cross_validation.NestedCrossValidator`.
+
+    Returns
+    -------
+    str
+        One of ``"sweep"``, ``"finetune"``, ``"flat_cv"``, or ``"nested"``.
+    """
+    if is_sweep:
+        return "sweep"
+    if finetuning_enabled:
+        return "finetune"
+    if runner == "flat_cv":
+        return "flat_cv"
+    return "nested"
+
+
 @hydra.main(
     version_base=None,
     config_path="../configs",
@@ -272,9 +303,16 @@ def main(cfg: DictConfig) -> None:
     logger.log_model_summary(sample_model, model_cfg)
 
     # ------------------------------------------------------------------
-    # 7) If sweep is enabled → run one trial (Hydra/Optuna dispatches per-trial)
+    # 7) Dispatch to the appropriate runner
     # ------------------------------------------------------------------
-    if is_sweep:
+    runner = select_runner(
+        is_sweep=is_sweep,
+        finetuning_enabled=ft_cfg.enabled,
+        runner=cfg.get("runner"),
+    )
+    log.info("Runner selected: %s", runner)
+
+    if runner == "sweep":
         from src.sweeps.hydra_sweep import HydraSweep
         from src.training.cross_validation import CrossValidator
         from src.training.trainer import Trainer
@@ -319,7 +357,7 @@ def main(cfg: DictConfig) -> None:
     # ------------------------------------------------------------------
     # 8) Else if finetuning is enabled → load checkpoint and fine-tune
     # ------------------------------------------------------------------
-    elif ft_cfg.enabled:
+    elif runner == "finetune":
         from src.finetuning.finetuner import Finetuner
 
         finetuner = Finetuner(ft_cfg)
@@ -395,7 +433,43 @@ def main(cfg: DictConfig) -> None:
                                  glm_col_range, feature_cfg.glm_normalize)
 
     # ------------------------------------------------------------------
-    # 9) Else → nested cross-validation (ADR-0008)
+    # 9a) Flat CV (legacy CrossValidator — no inner HPO, no explainer)
+    # ------------------------------------------------------------------
+    elif runner == "flat_cv":
+        from src.training.cross_validation import CrossValidator, build_flat_cv_artifact
+        from src.training.trainer import Trainer
+        from src.training.run_identity import build_run_name
+
+        log.info("Flat CV (legacy CrossValidator) — no HPO, no sweep, no explainer.")
+        trainer = Trainer(cfg=trainer_cfg, logger=logger)
+        cross_validator = CrossValidator(cfg=trainer_cfg)
+        results = cross_validator.run(
+            model_factory=model_factory,
+            dataset=graphs,
+            labels=labels,
+            trainer=trainer,
+            label_builder=label_builder,
+            label_components=label_components,
+            glm_col_range=glm_col_range,
+            glm_normalize=feature_cfg.glm_normalize,
+            model_config=model_cfg.model_dump(),
+            feature_config=feature_cfg.model_dump(),
+        )
+        log.info("Flat cross-validation complete")
+        _log_cv_results(results, logger)
+
+        # Persist a nested_cv_result.json-compatible artifact under the per-run
+        # checkpoint dir (ADR-0012), so scripts/pooled_vs_meanfolds.py works unchanged.
+        run_name = build_run_name(cfg.experiment_name)
+        ckpt_root = Path(trainer_cfg.checkpoint_dir) / run_name
+        artifact = build_flat_cv_artifact(
+            results, cfg=trainer_cfg, run_name=run_name, model_name=model_cfg.name,
+        )
+        artifact.save(ckpt_root / "nested_cv_result.json")
+        log.info("Saved flat-CV artifact to %s", ckpt_root / "nested_cv_result.json")
+
+    # ------------------------------------------------------------------
+    # 9b) Nested cross-validation (ADR-0008) — default runner
     # ------------------------------------------------------------------
     else:
         from src.training.nested_cross_validation import NestedCrossValidator
