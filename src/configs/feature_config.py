@@ -87,3 +87,25 @@ class FeatureConfig(BaseModel):
             "subjects (fit on training set only to prevent data leakage)."
         ),
     )
+    glm_value_permute: Literal["none", "per_subject", "fixed"] = Field(
+        default="none",
+        description=(
+            "Scramble GLM activation values across nodes BEFORE placement, "
+            "leaving the one-hot identity support intact (value<->identity "
+            "decoupling). 'none' is a no-op (byte-identical to unpermuted). "
+            "'per_subject' draws a fresh permutation per subject (seeded "
+            "deterministically from the subject id, stable across runs). "
+            "'fixed' uses one shared permutation for all subjects. Applies "
+            "identically to glm_scalar and glm_diagonal; never affects the "
+            "'identity' feature."
+        ),
+    )
+    glm_permute_seed: int = Field(
+        default=0,
+        description=(
+            "Base seed for 'glm_value_permute'. For 'fixed' it seeds the one "
+            "shared permutation; for 'per_subject' it is XOR-folded with a "
+            "stable hash of the subject id. Record it to reproduce the "
+            "corruption."
+        ),
+    )

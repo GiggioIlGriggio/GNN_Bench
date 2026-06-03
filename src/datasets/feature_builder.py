@@ -10,7 +10,8 @@ Design rules
 
 from __future__ import annotations
 
-from typing import Dict, Callable, List, Literal
+import hashlib
+from typing import Dict, Callable, List, Literal, Optional
 
 import numpy as np
 import torch
@@ -467,6 +468,10 @@ class FeatureBuilder:
             )
 
         N = graph_data.num_nodes
+        # Value<->identity decoupling: one permutation per subject, shared
+        # across contrasts, applied to the GLM values BEFORE placement so the
+        # one-hot support (column i) is untouched. ``None`` => no permutation.
+        perm = self._glm_value_permutation(graph_data.subject_id, N)
         parts: List[torch.Tensor] = []
         for contrast in contrasts:
             if contrast not in graph_data.glm_maps:
@@ -477,6 +482,8 @@ class FeatureBuilder:
             vals = torch.tensor(
                 graph_data.glm_maps[contrast], dtype=torch.float32
             )  # shape [N]
+            if perm is not None:
+                vals = vals[perm]
 
             if mode == "scalar":
                 parts.append(vals.unsqueeze(-1))  # [N, 1]
@@ -485,6 +492,32 @@ class FeatureBuilder:
                 parts.append(diag)
 
         return torch.cat(parts, dim=-1)
+
+    def _glm_value_permutation(
+        self, subject_id: str, num_nodes: int
+    ) -> Optional[torch.Tensor]:
+        """Permutation of GLM values across nodes, or ``None`` for no-op.
+
+        Implements the ``glm_value_permute`` knob. The seed is derived so the
+        corruption is reproducible across processes/machines (a stable
+        ``hashlib`` digest, never the salted builtin ``hash()``):
+
+        - ``"none"``       → ``None`` (caller skips permutation entirely).
+        - ``"fixed"``      → one shared permutation seeded by ``glm_permute_seed``.
+        - ``"per_subject"``→ a per-subject permutation seeded by the subject id
+          XOR-folded with ``glm_permute_seed``.
+        """
+        regime = self.cfg.glm_value_permute
+        if regime == "none":
+            return None
+        seed = self.cfg.glm_permute_seed
+        if regime == "fixed":
+            rng_seed = seed
+        else:  # per_subject
+            digest = hashlib.sha256(str(subject_id).encode("utf-8")).digest()
+            rng_seed = (int.from_bytes(digest[:8], "big") ^ seed) & 0xFFFFFFFFFFFFFFFF
+        perm = np.random.default_rng(rng_seed).permutation(num_nodes)
+        return torch.from_numpy(perm).long()
 
     def _binary_adjacency(self, graph_data: RawGraphData) -> torch.Tensor:
         """Dense 0/1 symmetric adjacency (no self-loops) from primary edges.

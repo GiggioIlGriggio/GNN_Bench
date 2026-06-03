@@ -1,0 +1,33 @@
+# GLM diagonal with FIXED value permutation (value<->identity decoupling).
+#
+# Identical to features=glm_diagonal except the GLM activation values are
+# scrambled across nodes by ONE shared permutation applied to every subject
+# (seeded by glm_permute_seed), leaving the one-hot identity support intact.
+# The value<->node binding is wrong but STABLE across subjects, so a model
+# could in principle learn to invert it (the H3 "stable code" probe).
+# glm_normalize stays true to match the 2026-05-29 batch (job 360744).
+# Maps to src.configs.feature_config.FeatureConfig
+#
+# Usage:
+#   PYTHONPATH=$(pwd) python scripts/run_experiment.py features=glm_diagonal_permfixed ...
+
+node_features:
+  - glm_diagonal
+edge_features:
+  - weight
+
+# node_feat_dim = glm_diagonal(num_nodes * num_contrasts)
+# With 400 nodes and 1 contrast: 400
+node_feat_dim: 400
+edge_feat_dim: 1
+
+# GLM settings
+glm_aggregation: mean
+glm_map_type: zmap
+glm_contrasts:
+  - contrast-2back_vs_0back
+glm_normalize: true
+
+# Value<->identity decoupling
+glm_value_permute: fixed
+glm_permute_seed: 0
