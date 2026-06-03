@@ -451,14 +451,17 @@ def build_flat_cv_artifact(
         _aggregate,
     )
 
+    if len(cv_result.fold_split_sizes) != len(cv_result.oof_y_true):
+        raise ValueError(
+            "fold_split_sizes is not populated consistently with oof_y_true — "
+            "pass a CVResult produced by the current CrossValidator.run()."
+        )
+
     fold_results = []
     for i, (y_true_arr, y_pred_arr) in enumerate(
         zip(cv_result.oof_y_true, cv_result.oof_y_pred)
     ):
-        if cv_result.fold_split_sizes:
-            n_train, n_val, n_test = cv_result.fold_split_sizes[i]
-        else:
-            n_train, n_val, n_test = 0, 0, len(y_true_arr)
+        n_train, n_val, n_test = cv_result.fold_split_sizes[i]
 
         # best_epoch is carried on the TrainResult for each fold.
         best_epoch = cv_result.fold_results[i].best_epoch
@@ -469,7 +472,7 @@ def build_flat_cv_artifact(
                 fold=i,
                 outer_test_metrics=cv_result.fold_test_metrics[i],
                 best_hparams={},
-                best_trial=-1,
+                best_trial=-1,  # sentinel: no HPO was run (flat CV)
                 refit_epochs=best_epoch,
                 n_train=n_train,
                 n_val=n_val,

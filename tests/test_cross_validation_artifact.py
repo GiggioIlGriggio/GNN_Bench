@@ -11,9 +11,11 @@ Four tests:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -94,7 +96,7 @@ def _make_dataset(n: int):
 
 
 @pytest.fixture()
-def two_fold_cv_result(tmp_path):
+def two_fold_cv_result(tmp_path, monkeypatch):
     """Run CrossValidator with 2 manually-specified folds and return the CVResult."""
     cfg = TrainerConfig(
         n_folds=2,
@@ -110,11 +112,14 @@ def two_fold_cv_result(tmp_path):
     dataset = _make_dataset(10)
     labels = np.arange(10, dtype=np.float32)
 
-    def _fake_split(self, dataset, labels):
-        yield [6, 7, 8, 9], [4, 5], [0, 1, 2]
-        yield [0, 1, 2, 3], [8, 9], [3, 4, 5, 6]
-
-    cv.split = lambda dataset, labels: _fake_split(cv, dataset, labels)
+    monkeypatch.setattr(
+        CrossValidator,
+        "split",
+        lambda self, dataset, labels: iter([
+            ([6, 7, 8, 9], [4, 5], [0, 1, 2]),
+            ([0, 1, 2, 3], [8, 9], [3, 4, 5, 6]),
+        ]),
+    )
 
     result = cv.run(
         model_factory=lambda: _ConstantModel(0.0),
@@ -238,11 +243,7 @@ def test_artifact_readable_by_recompute_tool(two_fold_cv_result, tmp_path):
     artifact.save(artifact_path)
 
     # Run the recompute tool as a subprocess
-    repo_root = str(
-        (
-            __import__("pathlib").Path(__file__).resolve().parents[1]
-        )
-    )
+    repo_root = str(Path(__file__).resolve().parents[1])
     proc = subprocess.run(
         [
             sys.executable,
@@ -252,7 +253,7 @@ def test_artifact_readable_by_recompute_tool(two_fold_cv_result, tmp_path):
         capture_output=True,
         text=True,
         cwd=repo_root,
-        env={**__import__("os").environ, "PYTHONPATH": repo_root},
+        env={**os.environ, "PYTHONPATH": repo_root},
     )
 
     assert proc.returncode == 0, (
@@ -272,3 +273,24 @@ def test_artifact_readable_by_recompute_tool(two_fold_cv_result, tmp_path):
     assert reported_r2 == pytest.approx(pooled_r2, abs=1e-3), (
         f"Tool reported pooled R²={reported_r2:.4f}, expected {pooled_r2:.4f}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 5: build_flat_cv_artifact raises ValueError on mismatched fold_split_sizes
+# ---------------------------------------------------------------------------
+
+
+def test_build_flat_cv_artifact_raises_on_mismatched_split_sizes():
+    """build_flat_cv_artifact must raise ValueError when fold_split_sizes length
+    does not match oof_y_true length (i.e. a legacy or hand-built CVResult)."""
+    bad_result = CVResult(
+        oof_y_true=[np.array([1.0, 2.0]), np.array([3.0])],
+        oof_y_pred=[np.array([1.5, 2.5]), np.array([3.5])],
+        fold_split_sizes=[],  # missing — mismatch with 2 folds above
+        fold_results=[],
+        fold_test_metrics=[],
+        aggregated={},
+    )
+    cfg = TrainerConfig(n_folds=2, label_norm_strategy="none", checkpoint_dir="/tmp", device="cpu")
+    with pytest.raises(ValueError, match="fold_split_sizes is not populated consistently"):
+        build_flat_cv_artifact(bad_result, cfg=cfg, run_name="x", model_name="y")
