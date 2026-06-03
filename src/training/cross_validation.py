@@ -40,11 +40,23 @@ class CVResult:
         Per-fold test metrics.
     aggregated : MetricDict
         Metrics computed on all fold test predictions pooled together.
+    oof_y_true : List[np.ndarray]
+        Per-fold out-of-fold ground-truth arrays (one per fold, test split).
+        Defaulted to empty list for backward compatibility.
+    oof_y_pred : List[np.ndarray]
+        Per-fold out-of-fold prediction arrays (one per fold, test split).
+        Defaulted to empty list for backward compatibility.
+    fold_split_sizes : List[Tuple[int, int, int]]
+        Per-fold ``(n_train, n_val, n_test)`` tuple.
+        Defaulted to empty list for backward compatibility.
     """
 
     fold_results: List[TrainResult] = field(default_factory=list)
     fold_test_metrics: List[MetricDict] = field(default_factory=list)
     aggregated: MetricDict = field(default_factory=dict)  # type: ignore[assignment]
+    oof_y_true: List[np.ndarray] = field(default_factory=list)
+    oof_y_pred: List[np.ndarray] = field(default_factory=list)
+    fold_split_sizes: List[Tuple[int, int, int]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +207,7 @@ class CrossValidator:
         fold_test_metrics: List[MetricDict] = []
         all_y_true: List[np.ndarray] = []
         all_y_pred: List[np.ndarray] = []
+        fold_split_sizes: List[Tuple[int, int, int]] = []
 
         # Helper: map integer indices → subject ID strings.
         # Raises an error if graphs lack a ``subject_id`` attribute.
@@ -377,6 +390,7 @@ class CrossValidator:
 
             fold_results.append(result)
             fold_test_metrics.append(test_metrics)
+            fold_split_sizes.append((len(train_idx), len(val_idx), len(test_idx)))
 
         aggregated = compute_metrics(
             np.concatenate(all_y_true), np.concatenate(all_y_pred)
@@ -385,4 +399,97 @@ class CrossValidator:
             fold_results=fold_results,
             fold_test_metrics=fold_test_metrics,
             aggregated=aggregated,
+            oof_y_true=list(all_y_true),
+            oof_y_pred=list(all_y_pred),
+            fold_split_sizes=fold_split_sizes,
         )
+
+
+# ---------------------------------------------------------------------------
+# Artifact converter
+# ---------------------------------------------------------------------------
+
+
+def build_flat_cv_artifact(
+    cv_result: CVResult,
+    *,
+    cfg: "TrainerConfig",
+    run_name: str,
+    model_name: str,
+) -> "NestedCVResult":
+    """Convert a flat :class:`CVResult` into a :class:`NestedCVResult` artifact.
+
+    The returned object is schema-compatible with the JSON format consumed by
+    ``scripts/pooled_vs_meanfolds.py`` and by
+    :class:`~src.training.nested_cross_validation.NestedCVResult`.
+
+    Parameters
+    ----------
+    cv_result : CVResult
+        Result of a completed :meth:`CrossValidator.run` call.  Must have
+        ``oof_y_true``, ``oof_y_pred``, and ``fold_split_sizes`` populated
+        (i.e. produced by the current implementation, not a legacy bare
+        ``CVResult``).
+    cfg : TrainerConfig
+        The config that was passed to :class:`CrossValidator`.
+    run_name : str
+        Identifier stored in ``NestedCVResult.run_name``.
+    model_name : str
+        Identifier stored in ``NestedCVResult.model_name``.
+
+    Returns
+    -------
+    NestedCVResult
+        A fully-populated nested-CV result with ``n_repetitions=1``,
+        ``inner_hpo_trials=0``, and ``hpo_metric="flat_cv"``.
+    """
+    # Function-local import to avoid circular imports if the module graph
+    # ever changes direction.
+    from src.training.nested_cross_validation import (  # noqa: PLC0415
+        FoldResult,
+        NestedCVResult,
+        _aggregate,
+    )
+
+    fold_results = []
+    for i, (y_true_arr, y_pred_arr) in enumerate(
+        zip(cv_result.oof_y_true, cv_result.oof_y_pred)
+    ):
+        if cv_result.fold_split_sizes:
+            n_train, n_val, n_test = cv_result.fold_split_sizes[i]
+        else:
+            n_train, n_val, n_test = 0, 0, len(y_true_arr)
+
+        # best_epoch is carried on the TrainResult for each fold.
+        best_epoch = cv_result.fold_results[i].best_epoch
+
+        fold_results.append(
+            FoldResult(
+                rep=0,
+                fold=i,
+                outer_test_metrics=cv_result.fold_test_metrics[i],
+                best_hparams={},
+                best_trial=-1,
+                refit_epochs=best_epoch,
+                n_train=n_train,
+                n_val=n_val,
+                n_test=n_test,
+                y_true=y_true_arr.tolist(),
+                y_pred=y_pred_arr.tolist(),
+            )
+        )
+
+    mean_metrics, std_metrics = _aggregate(fold_results)
+
+    return NestedCVResult(
+        run_name=run_name,
+        model_name=model_name,
+        n_repetitions=1,
+        n_outer_folds=cfg.n_folds,
+        inner_hpo_trials=0,
+        hpo_metric="flat_cv",
+        outer_seeds=[cfg.seed],
+        fold_results=fold_results,
+        mean_metrics=mean_metrics,
+        std_metrics=std_metrics,
+    )
