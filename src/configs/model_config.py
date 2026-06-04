@@ -49,6 +49,11 @@ class ModelConfig(BaseModel):
         default="last",
         description="Jumping Knowledge aggregation mode across layers.",
     )
+    norm: Literal["batch", "layer", "none"] = Field(
+        default="batch",
+        description="Per-layer normalization in GNN backbones "
+        "(batch=BatchNorm1d, layer=LayerNorm, none=Identity).",
+    )
     embedding_dim: int = Field(
         default=64,
         description="Dimensionality of the graph-level embedding (output of encode).",
