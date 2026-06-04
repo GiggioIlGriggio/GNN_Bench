@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import torch.nn as nn
 from torch_geometric.nn import GATConv
 
 from src.configs.model_config import ModelConfig
-from src.models.backbones.base_backbone import GNNBackbone
+from src.models.backbones.base_backbone import GNNBackbone, build_norm
 
 
 class GATBackbone(GNNBackbone):
@@ -34,6 +33,6 @@ class GATBackbone(GNNBackbone):
             self.convs.append(GATConv(cfg.hidden_dim, per_head_dim, heads=cfg.heads))
 
         for _ in range(cfg.num_layers):
-            self.norms.append(nn.BatchNorm1d(cfg.hidden_dim))
+            self.norms.append(build_norm(cfg.norm, cfg.hidden_dim))
 
         self._build_jk()

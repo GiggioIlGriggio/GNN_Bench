@@ -11,6 +11,25 @@ from torch_geometric.nn.models.jumping_knowledge import JumpingKnowledge
 from src.configs.model_config import ModelConfig
 
 
+def build_norm(kind: str, dim: int) -> nn.Module:
+    """Construct the per-layer normalization module for a GNN backbone.
+
+    - ``"batch"``: :class:`torch.nn.BatchNorm1d` (the historical default).
+    - ``"layer"``: plain :class:`torch.nn.LayerNorm` (per-node, across channels).
+    - ``"none"``:  :class:`torch.nn.Identity` (no normalization).
+
+    ``ModelConfig.norm`` already validates the value; the ``raise`` is
+    defense-in-depth for direct callers.
+    """
+    if kind == "batch":
+        return nn.BatchNorm1d(dim)
+    if kind == "layer":
+        return nn.LayerNorm(dim)
+    if kind == "none":
+        return nn.Identity()
+    raise ValueError(f"unknown norm kind: {kind!r}")
+
+
 def _apply_adjacency_type(
     edge_attr: torch.Tensor | None,
     adjacency_type: str,
