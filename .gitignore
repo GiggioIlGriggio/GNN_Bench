@@ -1,5 +1,6 @@
 # --- Large artifacts that don't belong in git ---
 .venv/
+.venv
 venv/
 *.sif
 checkpoints/
