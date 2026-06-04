@@ -189,6 +189,98 @@ seeds 42–46, `dataset.root=…/DATA2/…/PNC`. Numbers live here + in the repo
 - **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-repro-seed200` — https://wandb.ai/teampolpetta/orbitglm/runs/isu722xd
 - **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity-repro-seed200 --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-repro-seed200 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=200"`
 - **Results:** pearson_r 0.269 ± 0.107, r2 −0.060 ± 0.257 (mean-of-folds), r2 −0.054 (pooled, N=9730), mae 0.568 ± 0.071, rmse 0.729 ± 0.075 (50 outer folds). **Below the floor; widest fold scatter of the three.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/isu722xd)
+## Batch 2026-06-04 — VWM GLM node-features × backbone generalization (GAT/GIN/Transformer/BrainGNN)
+
+**What.** A robustness/generalization test of the [2026-06-03 GCN node-feature
+batch](#batch-2026-06-03--vwm-glm-node-features-re-run-reproducibility-audit):
+does the GCN node-feature *effect* (diagonal GLM forms ≳ scalar forms) replicate
+when the **backbone** is swapped? The full 7-cell node-feature matrix is re-run on
+four more architectures — **GAT, GIN, Graph Transformer, BrainGNN** — holding the
+2026-06-03 protocol fixed and changing only `model=` and its matched HPO sweeper.
+28 runs, jobs **360893–360920**, submitted 2026-06-04 to `gpunode02`, on SHA
+**`43907c7`** (branch `feature/multi-backbone-vwm-matrix`, **ADR-0013**;
+`configs/model/transformer.yaml` + 3 matched sweepers added, no training-code
+change). All four backbones passed a 1-rep/2-fold/2-epoch smoke test
+(`smoke-{gat,gin,transformer,braingnn}`, jobs 360889–360892) before launch.
+
+**Shared recipe (identical to 2026-06-03 except backbone + sweeper).**
+`dataset=pnc model=<backbone> labels=pnc_VWMdprime features.glm_normalize=true
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 trainer.search_space=configs/sweeper/<sweeper>.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm`, `--time=2-00:00:00`, wandb
+entity `teampolpetta`. (`trainer.epochs=300` is pinned explicitly — git-confirmed
+default, despite an erroneous "epochs=100" note in older docs.)
+
+**Matched HPO (ADR-0013).** Shared architectural base (`gcn_embedding_dim.yaml`:
+embedding_dim, hidden_dim, num_layers, dropout, pooling, jk_mode, head_hidden_dim,
+head_num_layers) + per-model personalization, with the **optimizer held out of HPO
+for every backbone**:
+- **GIN** → `gcn_embedding_dim.yaml` (base, no personalization).
+- **GAT / Transformer** → `gat_embedding_dim.yaml` / `transformer_embedding_dim.yaml`
+  = base + `model.heads: choice(1,2,4,8)` (all hidden_dim choices divisible).
+- **BrainGNN** → `braingnn_vwm_matched.yaml` = applicable base (drops `num_layers`
+  [fixed 2] and `pooling`/`jk_mode` [no-ops]) + `model_params` (pool_ratio,
+  roi_embed_dim, lambda_topk/unit/consist).
+
+> **⚠️ Caveat — same as 2026-06-03.** Nondeterminism is **not** addressed (kept
+> as-is for comparability), so each cell is a single noisy draw. The clean,
+> primary comparison is **within each backbone** (diagonal-vs-scalar under an
+> identical protocol; ADR-0008 corrected test valid there). Cross-backbone
+> **absolute** r² is confounded — the attention models and BrainGNN tune extra
+> degrees of freedom (`heads`, `model_params`) the generic base lacks — so do not
+> read it as a "best backbone" ranking.
+
+**Submission manifest** (results backfilled per backbone once the jobs finish).
+Per-cell suffix → features preset: `glmdiag`→`glm_diagonal`,
+`id-glmscalar`→`identity_glm_scalar`, `id-glmdiag`→`identity_glm_diagonal`,
+`scprof-glmscalar`→`scprofile_glm_scalar`, `scprof-glmdiag`→`scprofile_glm_diagonal`,
+`lappe-glmscalar`→`laplacian_pe_glm_scalar`, `lappe-glmdiag`→`laplacian_pe_glm_diagonal`.
+
+| Job | experiment_name | backbone | sweeper | R² (mean-of-folds) | R² (pooled) |
+|---|---|---|---|---|---|
+| 360893 | `gat-pnc-sc-vwm-glmdiag`          | gat | gat_embedding_dim | TBD | TBD |
+| 360894 | `gat-pnc-sc-vwm-id-glmscalar`     | gat | gat_embedding_dim | TBD | TBD |
+| 360895 | `gat-pnc-sc-vwm-id-glmdiag`       | gat | gat_embedding_dim | TBD | TBD |
+| 360896 | `gat-pnc-sc-vwm-scprof-glmscalar` | gat | gat_embedding_dim | TBD | TBD |
+| 360897 | `gat-pnc-sc-vwm-scprof-glmdiag`   | gat | gat_embedding_dim | TBD | TBD |
+| 360898 | `gat-pnc-sc-vwm-lappe-glmscalar`  | gat | gat_embedding_dim | TBD | TBD |
+| 360899 | `gat-pnc-sc-vwm-lappe-glmdiag`    | gat | gat_embedding_dim | TBD | TBD |
+| 360900 | `gin-pnc-sc-vwm-glmdiag`          | gin | gcn_embedding_dim | TBD | TBD |
+| 360901 | `gin-pnc-sc-vwm-id-glmscalar`     | gin | gcn_embedding_dim | TBD | TBD |
+| 360902 | `gin-pnc-sc-vwm-id-glmdiag`       | gin | gcn_embedding_dim | TBD | TBD |
+| 360903 | `gin-pnc-sc-vwm-scprof-glmscalar` | gin | gcn_embedding_dim | TBD | TBD |
+| 360904 | `gin-pnc-sc-vwm-scprof-glmdiag`   | gin | gcn_embedding_dim | TBD | TBD |
+| 360905 | `gin-pnc-sc-vwm-lappe-glmscalar`  | gin | gcn_embedding_dim | TBD | TBD |
+| 360906 | `gin-pnc-sc-vwm-lappe-glmdiag`    | gin | gcn_embedding_dim | TBD | TBD |
+| 360907 | `transformer-pnc-sc-vwm-glmdiag`          | transformer | transformer_embedding_dim | TBD | TBD |
+| 360908 | `transformer-pnc-sc-vwm-id-glmscalar`     | transformer | transformer_embedding_dim | TBD | TBD |
+| 360909 | `transformer-pnc-sc-vwm-id-glmdiag`       | transformer | transformer_embedding_dim | TBD | TBD |
+| 360910 | `transformer-pnc-sc-vwm-scprof-glmscalar` | transformer | transformer_embedding_dim | TBD | TBD |
+| 360911 | `transformer-pnc-sc-vwm-scprof-glmdiag`   | transformer | transformer_embedding_dim | TBD | TBD |
+| 360912 | `transformer-pnc-sc-vwm-lappe-glmscalar`  | transformer | transformer_embedding_dim | TBD | TBD |
+| 360913 | `transformer-pnc-sc-vwm-lappe-glmdiag`    | transformer | transformer_embedding_dim | TBD | TBD |
+| 360914 | `braingnn-pnc-sc-vwm-glmdiag`          | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360915 | `braingnn-pnc-sc-vwm-id-glmscalar`     | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360916 | `braingnn-pnc-sc-vwm-id-glmdiag`       | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360917 | `braingnn-pnc-sc-vwm-scprof-glmscalar` | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360918 | `braingnn-pnc-sc-vwm-scprof-glmdiag`   | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360919 | `braingnn-pnc-sc-vwm-lappe-glmscalar`  | braingnn | braingnn_vwm_matched | TBD | TBD |
+| 360920 | `braingnn-pnc-sc-vwm-lappe-glmdiag`    | braingnn | braingnn_vwm_matched | TBD | TBD |
+
+**Reporting plan (when complete).** Per cell: mean-of-folds r²±std, pooled r²,
+Pearson/MAE/RMSE (backfill from wandb + per-run `checkpoints/<name>-<jobid>/`).
+Per backbone: ADR-0008 corrected paired t-test on the diagonal-vs-scalar key
+pairs. Headline = whether the node-feature effect replicates within each
+architecture.
+
+**Command (example, gat-pnc-sc-vwm-id-glmdiag).** `cluster-submit --node gpunode02
+slurm/train.sh -J gat-pnc-sc-vwm-id-glmdiag --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=gat-pnc-sc-vwm-id-glmdiag
+features=identity_glm_diagonal dataset=pnc model=gat labels=pnc_VWMdprime
+features.glm_normalize=true trainer.n_repetitions=10 trainer.n_outer_folds=5
+trainer.inner_hpo_trials=20 trainer.epochs=300
+trainer.search_space=configs/sweeper/gat_embedding_dim.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm"`
 
 ---
 
