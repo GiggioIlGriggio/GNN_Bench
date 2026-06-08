@@ -27,3 +27,7 @@ description: "Brain connectivity GNN benchmarking run"
 # Metric optimised during a sweep (passed to HydraSweep). Override on the
 # CLI to match the sweeper you select, e.g. objective_metric=r2.
 objective_metric: r2
+
+# Training runner to dispatch. Override on the CLI with runner=flat_cv to use
+# the legacy flat CrossValidator (no inner HPO). Default: nested (nested CV).
+runner: nested

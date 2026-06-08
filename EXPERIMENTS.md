@@ -27,6 +27,97 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-04 — identity→VWM R² decomposition (reproduce the lost 0.1 + nested reproducibility)
+
+**What.** A three-experiment decomposition of a remembered "identity (one-hot)
+node features → `VWM_overall_dprime` at R²≈0.10" (from a **separate, now-lost
+codebase**; a flat 5-fold *pooled* test R²) against this repo's nearest run, job
+**360785** (nested CV + HPO, mean-of-folds **−0.028 ± 0.181**). Two questions:
+*is the 0.1 real and lost, or never there?* and *how reproducible is −0.028?*
+Full analysis + mechanism: **[`reports/2026-06-04-identity-vwm-r2-decomposition.md`](reports/2026-06-04-identity-vwm-r2-decomposition.md)**.
+
+**Headline.** The 0.10 is **not reproduced** — the identity→VWM generalization
+floor is **≈ 0** in every protocol. The nested runner's sub-zero readings are a
+refit/HPO-noise artifact, and the specific −0.028 is **not run-to-run
+reproducible** (a same-seed re-run moved it to −0.011). Pooled ≈ mean-of-folds
+in all 13 runs, so aggregation is not the hidden 0.1; the most likely origin is
+inner-validation optimism (`val_r2`≈+0.1 not surviving to test) and/or a single
+favorable draw of this noise-dominated pipeline. Aligns with the
+[2026-06-03 reproducibility audit](#batch-2026-06-03--vwm-glm-node-features-re-run-reproducibility-audit).
+
+**E3 — cluster (the 360785 protocol re-run).** Re-ran 360785's exact config
+(`features=identity`, GCN, PNC SC → `VWM_overall_dprime`, 10 reps × 5 outer
+folds, 20-trial inner HPO over `gcn_embedding_dim`, `hpo_metric=val_r2`) at three
+seeds, deploy SHA **`c36b47c`** (main; includes **ADR-0012** → per-fold
+predictions retained → pooled recoverable). All `COMPLETED 0:0`, ~16 h each,
+gpunode01/rtx2080, wandb `orbitglm/teampolpetta`. N=9,730 OOF predictions
+(10 reps × 973). `±` is dispersion across the 50 outer folds, **not** a standard
+error (the folds are correlated). Sorted by the tuning metric (mean-of-folds r²):
+
+| experiment_name | Job | seed | R² (mean-of-folds) | R² (pooled, N=9730) | R² pooled per-rep ± std | Pearson r (mof) | MAE (mof) | RMSE (mof) | run |
+|---|---|---|---|---|---|---|---|---|---|
+| `gcn-pnc-sc-vwm-identity-repro-seed100` | 360855 | 100 | +0.008 ± 0.177 | +0.008 | +0.008 ± 0.079 | 0.291 ± 0.096 | 0.549 ± 0.054 | 0.708 ± 0.061 | [wnypa1fk](https://wandb.ai/teampolpetta/orbitglm/runs/wnypa1fk) |
+| `gcn-pnc-sc-vwm-identity-repro-seed42` | 360854 | 42 | −0.011 ± 0.167 | −0.010 | −0.010 ± 0.075 | 0.288 ± 0.100 | 0.553 ± 0.051 | 0.715 ± 0.059 | [yircuja2](https://wandb.ai/teampolpetta/orbitglm/runs/yircuja2) |
+| `gcn-pnc-sc-vwm-identity-repro-seed200` | 360856 | 200 | −0.060 ± 0.257 | −0.054 | −0.054 ± 0.102 | 0.269 ± 0.107 | 0.568 ± 0.071 | 0.729 ± 0.075 | [isu722xd](https://wandb.ai/teampolpetta/orbitglm/runs/isu722xd) |
+| `gcn-pnc-sc-vwm-identity` (orig 360785, seed 42) | 360785 | 42 | −0.028 ± 0.181 | n/a¹ | n/a | 0.260 ± 0.115 | 0.560 ± 0.053 | 0.720 ± 0.059 | [3oyjdbbg](https://wandb.ai/teampolpetta/orbitglm/runs/3oyjdbbg) |
+
+¹ Pre-ADR-0012 (predictions overwritten); only mean-of-folds survives.
+**Same seed (42), byte-identical training code** (`git diff c2e973b c36b47c -- src/`
+touches only the ADR-0012 checkpoint path + new `run_identity.py`), yet
+−0.028 → −0.011 — the pipeline is nondeterministic run-to-run. Across seeds the
+headline wanders −0.060…+0.008; the "≈0 with large per-fold scatter" picture is
+the only robust statement.
+
+**E1/E2 — local companions (gitignored artifacts in `tmp/r2decomp/`).** N=973,
+seeds 42–46, `dataset.root=…/DATA2/…/PNC`. Numbers live here + in the report
+(not in git):
+- **E1** (faithful reconstruction — `runner=flat_cv`, flat 5-fold, epochs=300,
+  best-val restore — the *same quantity* the 0.1 was): **pooled R² +0.009 ± 0.015**
+  (mean-of-folds +0.008 ± 0.015), range −0.014…+0.027. **0.10 not reproduced;
+  floor ≈ 0.** Not a bug: train loss → ≈0.13 while val R² goes negative; best-val
+  restore lands at the null model.
+- **E2** (nested runner, no HPO: `inner_hpo_trials=0`, 1 rep, fixed-epoch refit):
+  **pooled R² −0.189 ± 0.174** (mean-of-folds −0.190 ± 0.174), range −0.483…−0.027,
+  ~11× E1's seed-variance. `refit_epochs` span 1–135 (median 4; 19/25 folds ≤5,
+  underfit) → the nested negativity is a **protocol artifact**, not anti-signal.
+
+### gcn-pnc-sc-vwm-identity-repro-seed42
+- **Date:** 2026-06-04
+- **Description:** Reproducibility re-run of job 360785's exact nested-CV+HPO
+  config at the default seed (42), on ADR-0012 code so per-fold predictions (and
+  pooled r²) are retained. Part of the identity→VWM R² decomposition.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity trainer.seed=42` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `c36b47c`
+- **Job ID:** 360854 (`-J gcn-pnc-sc-vwm-identity-repro-seed42`), gpunode01/rtx2080.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-repro-seed42` — https://wandb.ai/teampolpetta/orbitglm/runs/yircuja2
+- **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity-repro-seed42 --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-repro-seed42 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=42"`
+- **Results:** pearson_r 0.288 ± 0.100, r2 −0.011 ± 0.167 (mean-of-folds), r2 −0.010 (pooled, N=9730), mae 0.553 ± 0.051, rmse 0.715 ± 0.059 (50 outer folds). **Floor ≈ 0; vs orig 360785 (same seed) −0.028 → −0.011.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/yircuja2)
+
+### gcn-pnc-sc-vwm-identity-repro-seed100
+- **Date:** 2026-06-04
+- **Description:** As `…-repro-seed42` but `trainer.seed=100` — seed sensitivity of the nested headline.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity trainer.seed=100` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `c36b47c`
+- **Job ID:** 360855 (`-J gcn-pnc-sc-vwm-identity-repro-seed100`), gpunode01/rtx2080.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-repro-seed100` — https://wandb.ai/teampolpetta/orbitglm/runs/wnypa1fk
+- **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity-repro-seed100 --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-repro-seed100 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=100"`
+- **Results:** pearson_r 0.291 ± 0.096, r2 +0.008 ± 0.177 (mean-of-folds), r2 +0.008 (pooled, N=9730), mae 0.549 ± 0.054, rmse 0.708 ± 0.061 (50 outer folds). **Floor ≈ 0.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/wnypa1fk)
+
+### gcn-pnc-sc-vwm-identity-repro-seed200
+- **Date:** 2026-06-04
+- **Description:** As `…-repro-seed42` but `trainer.seed=200` — seed sensitivity of the nested headline.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity trainer.seed=200` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `c36b47c`
+- **Job ID:** 360856 (`-J gcn-pnc-sc-vwm-identity-repro-seed200`), gpunode01/rtx2080.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-repro-seed200` — https://wandb.ai/teampolpetta/orbitglm/runs/isu722xd
+- **Command:** `cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J gcn-pnc-sc-vwm-identity-repro-seed200 --time=2-00:00:00 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-repro-seed200 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=200"`
+- **Results:** pearson_r 0.269 ± 0.107, r2 −0.060 ± 0.257 (mean-of-folds), r2 −0.054 (pooled, N=9730), mae 0.568 ± 0.071, rmse 0.729 ± 0.075 (50 outer folds). **Below the floor; widest fold scatter of the three.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/isu722xd)
+
+---
+
 ## Batch 2026-06-03 — VWM GLM node-features RE-RUN (reproducibility audit)
 
 **What.** A verbatim re-run of the [2026-05-29 batch](#batch-2026-05-29--vwm-glm-node-feature-encodings-7-run-matrix)
