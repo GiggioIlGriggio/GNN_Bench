@@ -7,7 +7,7 @@ import torch.nn as nn
 from torch_geometric.nn import GCNConv
 
 from src.configs.model_config import ModelConfig
-from src.models.backbones.base_backbone import GNNBackbone
+from src.models.backbones.base_backbone import GNNBackbone, build_norm
 
 
 class GCNBackbone(GNNBackbone):
@@ -30,7 +30,7 @@ class GCNBackbone(GNNBackbone):
             self.convs.append(GCNConv(cfg.hidden_dim, cfg.hidden_dim))
 
         for _ in range(cfg.num_layers):
-            self.norms.append(nn.BatchNorm1d(cfg.hidden_dim))
+            self.norms.append(build_norm(cfg.norm, cfg.hidden_dim))
 
         self._build_jk()
 

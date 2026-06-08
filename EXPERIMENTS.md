@@ -27,6 +27,80 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-08 — identity→VWM LayerNorm vs BatchNorm (the `model.norm` knob)
+
+**What.** Follow-up to the [2026-06-04 decomposition](#batch-2026-06-04--identityvwm-r-decomposition-reproduce-the-lost-01--nested-reproducibility):
+does swapping the per-layer norm change the identity→VWM floor? Shipped a
+first-class **`model.norm`** knob (`batch`|`layer`|`none`, default `batch`,
+byte-identical to all prior results) via a `build_norm` factory wired into
+gcn/gat/gin (branch `feature/gnn-norm-layernorm`, deploy **`6253c1a`**;
+26 tests in `tests/test_backbone_norm.py`). E4 re-runs the **exact E3 protocol**
+with **`model.norm=layer`** (plain `nn.LayerNorm(hidden_dim)`) at seeds
+42/100/200. Comparator = the existing E3 **BatchNorm** runs (360854/55/56) — not
+re-run. Full analysis: **[report §9](reports/2026-06-04-identity-vwm-r2-decomposition.md#9-e4--layernorm-vs-batchnorm-at-the-floor-the-modelnorm-knob)**.
+
+**Headline — no rescue.** LayerNorm lands at the same **≈0 floor**: mean pooled
+R² **−0.026** (LayerNorm) vs **−0.018** (BatchNorm, E3) — a Δ of −0.008 that is
+an order of magnitude smaller than the cross-seed spread (~0.06) and the
+pipeline's same-seed run-to-run swing (±0.017, §4). Pooled MAE/RMSE are
+indistinguishable too. The norm choice is **immaterial at this no-signal floor**;
+it does not manufacture a signal that pure node identity does not carry.
+*Hardware caveat:* E4 ran on **gpunode02/rtx6000**, E3 on **gpunode01/rtx2080** —
+uncontrolled, but subsumed by the run-to-run noise already established on
+identical hardware. `transformer` backbone keeps its own hardcoded LayerNorm
+(not yet on the knob — follow-up).
+
+**E4 — cluster.** `features=identity`, GCN, PNC SC → `VWM_overall_dprime`, 10 reps
+× 5 outer folds, 20-trial inner HPO over `gcn_embedding_dim`, `hpo_metric=val_r2`,
+**+ `model.norm=layer`**. All `COMPLETED 0:0`, ~10 h each, gpunode02/rtx6000,
+wandb `orbitglm/teampolpetta`. N=9,730 OOF predictions. `±` is dispersion across
+the 50 outer folds, **not** a standard error. Sorted by the tuning metric
+(mean-of-folds r²):
+
+| experiment_name | Job | seed | R² (mean-of-folds) | R² (pooled, N=9730) | R² pooled per-rep ± std | Pearson r (mof) | MAE (mof) | RMSE (mof) | run |
+|---|---|---|---|---|---|---|---|---|---|
+| `gcn-pnc-sc-vwm-identity-layernorm-seed200` | 360869 | 200 | −0.025 ± 0.100 | −0.022 | −0.022 ± 0.033 | 0.203 ± 0.140 | 0.557 ± 0.028 | 0.720 ± 0.037 | [xa4ih1f5](https://wandb.ai/teampolpetta/orbitglm/runs/xa4ih1f5) |
+| `gcn-pnc-sc-vwm-identity-layernorm-seed100` | 360868 | 100 | −0.025 ± 0.100 | −0.025 | −0.025 ± 0.045 | 0.208 ± 0.125 | 0.559 ± 0.036 | 0.722 ± 0.042 | [95rs4cyw](https://wandb.ai/teampolpetta/orbitglm/runs/95rs4cyw) |
+| `gcn-pnc-sc-vwm-identity-layernorm-seed42` | 360867 | 42 | −0.035 ± 0.143 | −0.031 | −0.031 ± 0.070 | 0.193 ± 0.142 | 0.560 ± 0.040 | 0.723 ± 0.047 | [77ss9cjr](https://wandb.ai/teampolpetta/orbitglm/runs/77ss9cjr) |
+| *BatchNorm comparator (E3 mean of 3 seeds)* | *360854/5/6* | *42/100/200* | *−0.021* | *−0.018* | — | — | — | — | *see Batch 2026-06-04* |
+
+### gcn-pnc-sc-vwm-identity-layernorm-seed42
+- **Date:** 2026-06-08
+- **Description:** identity→VWM at the exact E3 nested-CV+HPO protocol but with
+  `model.norm=layer` (LayerNorm instead of BatchNorm), seed 42. Tests whether the
+  norm choice rescues the ≈0 floor. Exercises the new `model.norm` knob.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity model.norm=layer trainer.seed=42` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `6253c1a`
+- **Job ID:** 360867 (`-J gcn-pnc-sc-vwm-identity-layernorm-seed42`), gpunode02/rtx6000.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-layernorm-seed42` — https://wandb.ai/teampolpetta/orbitglm/runs/77ss9cjr
+- **Command:** `cluster-submit --node gpunode02 --gpu rtx6000 slurm/train.sh -J gcn-pnc-sc-vwm-identity-layernorm-seed42 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-layernorm-seed42 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime model.norm=layer logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=42"`
+- **Results:** pearson_r 0.193 ± 0.142, r2 −0.035 ± 0.143 (mean-of-folds), r2 −0.031 (pooled, N=9730), mae 0.560 ± 0.040, rmse 0.723 ± 0.047 (50 outer folds). **Floor ≈ 0; LayerNorm does not rescue it (vs E3 BatchNorm seed42 −0.011).** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/77ss9cjr)
+
+### gcn-pnc-sc-vwm-identity-layernorm-seed100
+- **Date:** 2026-06-08
+- **Description:** As `…-layernorm-seed42` but `trainer.seed=100` — seed sensitivity of the LayerNorm arm.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity model.norm=layer trainer.seed=100` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `6253c1a`
+- **Job ID:** 360868 (`-J gcn-pnc-sc-vwm-identity-layernorm-seed100`), gpunode02/rtx6000.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-layernorm-seed100` — https://wandb.ai/teampolpetta/orbitglm/runs/95rs4cyw
+- **Command:** `cluster-submit --node gpunode02 --gpu rtx6000 slurm/train.sh -J gcn-pnc-sc-vwm-identity-layernorm-seed100 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-layernorm-seed100 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime model.norm=layer logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=100"`
+- **Results:** pearson_r 0.208 ± 0.125, r2 −0.025 ± 0.100 (mean-of-folds), r2 −0.025 (pooled, N=9730), mae 0.559 ± 0.036, rmse 0.722 ± 0.042 (50 outer folds). **Floor ≈ 0.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/95rs4cyw)
+
+### gcn-pnc-sc-vwm-identity-layernorm-seed200
+- **Date:** 2026-06-08
+- **Description:** As `…-layernorm-seed42` but `trainer.seed=200` — seed sensitivity of the LayerNorm arm.
+- **Dataset / target:** PNC (SC, schaefer400) / `VWM_overall_dprime`.
+- **Changed parameters:** `features=identity model.norm=layer trainer.seed=200` (+ shared recipe).
+- **Commit SHA (DEPLOY_SHA):** `6253c1a`
+- **Job ID:** 360869 (`-J gcn-pnc-sc-vwm-identity-layernorm-seed200`), gpunode02/rtx6000.
+- **wandb run:** orbitglm/teampolpetta — run `gcn-pnc-sc-vwm-identity-layernorm-seed200` — https://wandb.ai/teampolpetta/orbitglm/runs/xa4ih1f5
+- **Command:** `cluster-submit --node gpunode02 --gpu rtx6000 slurm/train.sh -J gcn-pnc-sc-vwm-identity-layernorm-seed200 "--export=ALL,RUN_ARGS=experiment_name=gcn-pnc-sc-vwm-identity-layernorm-seed200 features=identity dataset=pnc model=gcn labels=pnc_VWMdprime model.norm=layer logging.project=orbitglm trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml trainer.hpo_metric=val_r2 trainer.seed=200"`
+- **Results:** pearson_r 0.203 ± 0.140, r2 −0.025 ± 0.100 (mean-of-folds), r2 −0.022 (pooled, N=9730), mae 0.557 ± 0.028, rmse 0.720 ± 0.037 (50 outer folds). **Floor ≈ 0.** [wandb run](https://wandb.ai/teampolpetta/orbitglm/runs/xa4ih1f5)
+
+---
+
 ## Batch 2026-06-04 — identity→VWM R² decomposition (reproduce the lost 0.1 + nested reproducibility)
 
 **What.** A three-experiment decomposition of a remembered "identity (one-hot)

@@ -10,6 +10,7 @@ heads: 1                      # unused for GCN but required field
 pooling: mean                 # mean | max | add | attention
 fusion: null                  # null for unimodal
 jk_mode: last                 # last | cat | max
+norm: batch                   # batch | layer | none
 embedding_dim: 64
 head_hidden_dim: 32
 head_num_layers: 2
