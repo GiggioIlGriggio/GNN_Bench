@@ -1,0 +1,27 @@
+# @package hydra.sweeper
+# Matched cross-backbone HPO search space for GAT (ADR-0013).
+#
+# Shared architectural base == gcn_embedding_dim.yaml, PLUS the attention-head
+# count, which is GAT's per-model personalization. Optimizer (lr/weight_decay)
+# is deliberately held OUT of HPO so every backbone tunes architecture only.
+# All hidden_dim choices are divisible by every heads choice (asserted in the
+# GAT backbone: hidden_dim % heads == 0).
+#
+# Used by the VWM GLM node-feature x backbone-generalization batch via
+#   trainer.search_space=configs/sweeper/gat_embedding_dim.yaml
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 250
+params:
+  model.embedding_dim: choice(32, 64, 128, 256)
+  model.hidden_dim: choice(32, 64, 128, 256)
+  model.num_layers: choice(2, 3, 4, 5)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.pooling: choice(mean, max, add)
+  model.jk_mode: choice(last, cat, max)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(2)
+  model.heads: choice(1, 2, 4, 8)   # GAT personalization (not in the generic base)

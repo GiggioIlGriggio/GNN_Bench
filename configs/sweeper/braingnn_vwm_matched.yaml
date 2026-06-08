@@ -1,0 +1,36 @@
+# @package hydra.sweeper
+# Matched cross-backbone HPO search space for BrainGNN (ADR-0013).
+#
+# BrainGNN cannot share the generic sweeper: num_layers is structurally fixed at
+# 2 (two TopK pooling stages) and pooling/jk_mode are no-ops. This file keeps the
+# APPLICABLE shared architectural base (embedding_dim, hidden_dim, dropout,
+# head_hidden_dim, head_num_layers) so BrainGNN is tuned on the same footing as
+# the generic backbones, PLUS BrainGNN's per-model personalization (the TopK
+# pooling ratio, the per-ROI weight-net community count, and the auxiliary loss
+# weights). Optimizer (lr/weight_decay) is deliberately held OUT of HPO to match
+# the other backbones -- this is braingnn_fc_vwm.yaml minus lr/weight_decay, with
+# the base architecture knobs aligned to gcn_embedding_dim.yaml.
+#
+# Used by the VWM GLM node-feature x backbone-generalization batch via
+#   trainer.search_space=configs/sweeper/braingnn_vwm_matched.yaml
+
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 50
+params:
+  # --- applicable shared architectural base (same as the generic backbones) ---
+  model.embedding_dim: choice(32, 64, 128, 256)
+  model.hidden_dim: choice(32, 64, 128, 256)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(2)
+  # num_layers omitted: structurally fixed at 2 (two TopK pooling stages)
+  # pooling / jk_mode omitted: no-ops in BrainGNN, kept only for schema
+  # --- BrainGNN-specific personalization ---
+  model.model_params.pool_ratio: interval(0.3, 0.8)
+  model.model_params.roi_embed_dim: choice(4, 8, 16, 32)
+  model.model_params.lambda_topk: interval(0.0, 1.0)
+  model.model_params.lambda_unit: interval(0.0, 1.0)
+  model.model_params.lambda_consist: interval(0.0, 1.0)
