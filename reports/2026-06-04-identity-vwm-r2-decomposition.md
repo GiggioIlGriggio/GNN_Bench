@@ -48,6 +48,12 @@ on a val_r2 of ≈+0.1 that does not survive to held-out test; cf.
 `val_test_optimism_gap`) and/or a single favorable draw of this noise-dominated
 pipeline — not a reproducible identity→VWM effect.
 
+**Update (E4, 2026-06-08).** Swapping BatchNorm→LayerNorm at the exact E3
+protocol — via a new first-class `model.norm` knob — changes nothing: mean
+pooled R² **−0.026 (LayerNorm) vs −0.018 (BatchNorm)**, a difference well inside
+this pipeline's run-to-run noise. The normalization choice **does not rescue the
+floor** (§9).
+
 ---
 
 ## 1. The question and the three reconstructions
@@ -237,3 +243,56 @@ that base change, are unrelated to this branch's work, and are left untouched
 (stale assertions, not regressions). The **18** tests added by Deliverable A
 (5 in `tests/test_cross_validation_artifact.py` + 13 in
 `tests/test_run_experiment_routing.py`) all pass.
+
+## 9. E4 — LayerNorm vs BatchNorm at the floor (the `model.norm` knob)
+
+E1–E3 all held the per-layer normalization fixed at the historical
+`nn.BatchNorm1d`. Over a PyG graph batch, BatchNorm couples samples — it
+normalizes each channel across *all nodes of all graphs in the batch* — so a
+fair worry is that the ≈0 floor is partly a BatchNorm artifact rather than a
+property of the identity feature. To test that, and to exercise a new
+first-class **`model.norm`** knob (`batch`|`layer`|`none`, default `batch`,
+byte-identical to every result above), E4 re-runs the **exact E3 protocol** with
+**`model.norm=layer`** (plain `nn.LayerNorm(hidden_dim)` — per-node across
+channels, batch-size-independent) at the same three seeds. The BatchNorm
+comparator is E3 itself; BatchNorm was **not** re-run.
+
+| Norm | Job | Seed | R² mean-of-folds | R² pooled (N=9730) | per-rep pooled std |
+|---|---|---|---|---|---|
+| BatchNorm (E3) | 360854 | 42 | −0.0106 ± 0.167 | −0.0096 | 0.075 |
+| BatchNorm (E3) | 360855 | 100 | +0.0085 ± 0.177 | +0.0083 | 0.079 |
+| BatchNorm (E3) | 360856 | 200 | −0.0599 ± 0.257 | −0.0540 | 0.102 |
+| **BatchNorm mean** | | | **−0.0207** | **−0.0184** | |
+| LayerNorm (E4) | 360867 | 42 | −0.0346 ± 0.143 | −0.0314 | 0.070 |
+| LayerNorm (E4) | 360868 | 100 | −0.0252 ± 0.100 | −0.0253 | 0.045 |
+| LayerNorm (E4) | 360869 | 200 | −0.0251 ± 0.100 | −0.0216 | 0.033 |
+| **LayerNorm mean** | | | **−0.0283** | **−0.0261** | |
+
+**Verdict — no rescue.** LayerNorm lands at the same ≈0 floor: mean pooled
+**−0.026** vs BatchNorm **−0.018**, a Δ of −0.008 that is an order of magnitude
+smaller than (a) the cross-seed spread within either arm (~0.06 R²) and (b) the
+**same-seed run-to-run swing** established in §4 (−0.028→−0.011, Δ 0.017 on
+byte-identical code). Pooled error metrics are likewise indistinguishable
+(LayerNorm MAE 0.557–0.560 / RMSE 0.721–0.725 vs BatchNorm 0.55–0.57 /
+0.708–0.729). The normalization choice is **immaterial at this no-signal floor** —
+consistent with §6: pure node identity carries no transferable VWM signal, and
+changing how activations are normalized cannot manufacture one. (If anything,
+LayerNorm's per-rep pooled std is marginally *lower* — steadier reps — but the
+central tendency is unchanged.)
+
+**Hardware caveat (uncontrolled).** E4 ran on **gpunode02/rtx6000**; E3 on
+**gpunode01/rtx2080** — so the BatchNorm↔LayerNorm contrast also spans a GPU
+change. This is not held fixed. But §4 already showed the pipeline is not
+run-to-run reproducible *on identical hardware* (±0.017 same-seed), a band that
+subsumes the −0.008 norm difference, so no conclusion here depends on the GPU
+being constant. The robust statement stands: **≈0 under either norm.**
+
+**Provenance.** Jobs **360867 / 360868 / 360869** (`COMPLETED 0:0`, ~10 h each,
+gpunode02/rtx6000), deploy SHA **6253c1a** on branch
+`feature/gnn-norm-layernorm`, `RUN_ARGS` = E3's recipe + `model.norm=layer`,
+wandb `orbitglm/teampolpetta`. Artifacts fetched (root-relative paths) to
+`tmp/r2decomp/layernorm/seed{42,100,200}.json`; recompute both flavours with
+`scripts/pooled_vs_meanfolds.py <json>`. The knob itself: a `build_norm` factory
+in `src/models/backbones/base_backbone.py` wired into gcn/gat/gin, with 26 tests
+in `tests/test_backbone_norm.py`. (The `transformer` backbone retains its own
+hardcoded `LayerNorm` and is not yet routed through the knob — a follow-up.)
