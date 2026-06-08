@@ -370,6 +370,8 @@ Two scalar diagonal-cells carry pathological fold variance (`gin-scprof-glmdiag`
 ±0.476, `transformer-scprof-glmdiag` ±0.755) — single folds blew up; their means
 are unreliable and both already sit at/below 0.
 
+**Full report:** [`reports/2026-06-04-vwm-glm-node-features-cross-backbone-generalization.md`](reports/2026-06-04-vwm-glm-node-features-cross-backbone-generalization.md).
+
 **Command (example, gat-pnc-sc-vwm-id-glmdiag).** `cluster-submit --node gpunode02
 slurm/train.sh -J gat-pnc-sc-vwm-id-glmdiag --time=2-00:00:00
 "--export=ALL,RUN_ARGS=experiment_name=gat-pnc-sc-vwm-id-glmdiag
