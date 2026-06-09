@@ -27,6 +27,97 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-09 — VWM-HL GLM node-features × backbone generalization on ORBIT (GCN/GAT/GIN/Transformer)
+
+**What.** Reproduces the [2026-06-04 PNC backbone-generalization
+batch](#batch-2026-06-04--vwm-glm-node-features--backbone-generalization-gatgintransformerbraingnn)
+with two substitutions: **BrainGNN → GCN** (BrainGNN sat at the no-skill floor on
+PNC, so it's replaced by GCN, which is also the ADR-0013 matched-HPO *base*) and
+**PNC → ORBIT**. The full 7-cell node-feature matrix is run on four backbones —
+**GCN, GAT, GIN, Graph Transformer** — holding the 2026-06-04 protocol fixed and
+changing only `dataset`, `labels`, and the backbone+sweeper. 28 runs, jobs
+**361026–361053**, submitted 2026-06-09 to `gpunode02`, on SHA **`c6997d5`**
+(branch `feature/orbit-vwmhl-backbone-matrix`; config + submit-script only, **no
+training-code change**, design spec
+[`2026-06-09-orbit-vwmhl-gcn-backbone-matrix-design.md`](docs/superpowers/specs/2026-06-09-orbit-vwmhl-gcn-backbone-matrix-design.md)).
+The **full 28-cell matrix passed a 1-rep/2-fold/2-epoch smoke** (jobs 360996 +
+360997–361024, all `COMPLETED 0:0`, wandb off) before launch — validating every
+preset × backbone path on ORBIT and deploy freshness.
+
+**Shared recipe (identical to 2026-06-04 except dataset/label/backbone+sweeper).**
+`dataset=orbit model=<backbone> labels=orbit_mri_VWM_HL_p features.glm_normalize=true
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 trainer.search_space=configs/sweeper/<sweeper>.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm`, `--time=2-00:00:00`, wandb
+entity `teampolpetta`.
+
+**Matched HPO (ADR-0013, GCN dropped into BrainGNN's slot).** Optimizer held out of
+HPO for every backbone:
+- **GCN / GIN** → `gcn_embedding_dim.yaml` (the matched base, no personalization).
+- **GAT / Transformer** → `gat_embedding_dim.yaml` / `transformer_embedding_dim.yaml`
+  = base + `model.heads: choice(1,2,4,8)`.
+
+> **⚠️ Caveat — small N.** ORBIT VWM-HL has **N≈95** (bounded by GLM-map coverage:
+> 101 maps / 129 structural / 130 non-null labels), ~10× smaller than PNC's ~940.
+> Mean-of-folds r² is volatile at this N (the prior `orbit_GLM_VWMHL_gcn` GCN run
+> gave per-fold r² −0.43…+0.27 with Pearson steady ~0.4), so the headline will lean
+> on **pooled r² + Pearson r**. The label is a **bounded proportion-correct**
+> (high-load, [0.11, 0.98]), *not* PNC's unbounded d-prime — so **absolute r² is not
+> comparable to PNC**; only the *within-batch* contrasts (diagonal-vs-scalar, across
+> backbones) transfer. Nondeterminism unaddressed (single noisy draw per cell, same
+> as 2026-06-04).
+
+**Submission manifest** (results backfilled per backbone once the jobs finish).
+Per-cell suffix → features preset: `glmdiag`→`glm_diagonal`,
+`id-glmscalar`→`identity_glm_scalar`, `id-glmdiag`→`identity_glm_diagonal`,
+`scprof-glmscalar`→`scprofile_glm_scalar`, `scprof-glmdiag`→`scprofile_glm_diagonal`,
+`lappe-glmscalar`→`laplacian_pe_glm_scalar`, `lappe-glmdiag`→`laplacian_pe_glm_diagonal`.
+
+| Job | experiment_name | backbone | sweeper | R² (mean-of-folds) | R² (pooled) |
+|---|---|---|---|---|---|
+| 361026 | `gcn-orbit-sc-vwmhl-glmdiag`          | gcn | gcn_embedding_dim | TBD | TBD |
+| 361027 | `gcn-orbit-sc-vwmhl-id-glmscalar`     | gcn | gcn_embedding_dim | TBD | TBD |
+| 361028 | `gcn-orbit-sc-vwmhl-id-glmdiag`       | gcn | gcn_embedding_dim | TBD | TBD |
+| 361029 | `gcn-orbit-sc-vwmhl-scprof-glmscalar` | gcn | gcn_embedding_dim | TBD | TBD |
+| 361030 | `gcn-orbit-sc-vwmhl-scprof-glmdiag`   | gcn | gcn_embedding_dim | TBD | TBD |
+| 361031 | `gcn-orbit-sc-vwmhl-lappe-glmscalar`  | gcn | gcn_embedding_dim | TBD | TBD |
+| 361032 | `gcn-orbit-sc-vwmhl-lappe-glmdiag`    | gcn | gcn_embedding_dim | TBD | TBD |
+| 361033 | `gat-orbit-sc-vwmhl-glmdiag`          | gat | gat_embedding_dim | TBD | TBD |
+| 361034 | `gat-orbit-sc-vwmhl-id-glmscalar`     | gat | gat_embedding_dim | TBD | TBD |
+| 361035 | `gat-orbit-sc-vwmhl-id-glmdiag`       | gat | gat_embedding_dim | TBD | TBD |
+| 361036 | `gat-orbit-sc-vwmhl-scprof-glmscalar` | gat | gat_embedding_dim | TBD | TBD |
+| 361037 | `gat-orbit-sc-vwmhl-scprof-glmdiag`   | gat | gat_embedding_dim | TBD | TBD |
+| 361038 | `gat-orbit-sc-vwmhl-lappe-glmscalar`  | gat | gat_embedding_dim | TBD | TBD |
+| 361039 | `gat-orbit-sc-vwmhl-lappe-glmdiag`    | gat | gat_embedding_dim | TBD | TBD |
+| 361040 | `gin-orbit-sc-vwmhl-glmdiag`          | gin | gcn_embedding_dim | TBD | TBD |
+| 361041 | `gin-orbit-sc-vwmhl-id-glmscalar`     | gin | gcn_embedding_dim | TBD | TBD |
+| 361042 | `gin-orbit-sc-vwmhl-id-glmdiag`       | gin | gcn_embedding_dim | TBD | TBD |
+| 361043 | `gin-orbit-sc-vwmhl-scprof-glmscalar` | gin | gcn_embedding_dim | TBD | TBD |
+| 361044 | `gin-orbit-sc-vwmhl-scprof-glmdiag`   | gin | gcn_embedding_dim | TBD | TBD |
+| 361045 | `gin-orbit-sc-vwmhl-lappe-glmscalar`  | gin | gcn_embedding_dim | TBD | TBD |
+| 361046 | `gin-orbit-sc-vwmhl-lappe-glmdiag`    | gin | gcn_embedding_dim | TBD | TBD |
+| 361047 | `transformer-orbit-sc-vwmhl-glmdiag`          | transformer | transformer_embedding_dim | TBD | TBD |
+| 361048 | `transformer-orbit-sc-vwmhl-id-glmscalar`     | transformer | transformer_embedding_dim | TBD | TBD |
+| 361049 | `transformer-orbit-sc-vwmhl-id-glmdiag`       | transformer | transformer_embedding_dim | TBD | TBD |
+| 361050 | `transformer-orbit-sc-vwmhl-scprof-glmscalar` | transformer | transformer_embedding_dim | TBD | TBD |
+| 361051 | `transformer-orbit-sc-vwmhl-scprof-glmdiag`   | transformer | transformer_embedding_dim | TBD | TBD |
+| 361052 | `transformer-orbit-sc-vwmhl-lappe-glmscalar`  | transformer | transformer_embedding_dim | TBD | TBD |
+| 361053 | `transformer-orbit-sc-vwmhl-lappe-glmdiag`    | transformer | transformer_embedding_dim | TBD | TBD |
+
+**Command (example, gcn-orbit-sc-vwmhl-id-glmdiag).** `cluster-submit --node gpunode02
+slurm/train.sh -J gcn-orbit-sc-vwmhl-id-glmdiag --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=gcn-orbit-sc-vwmhl-id-glmdiag
+features=identity_glm_diagonal dataset=orbit model=gcn labels=orbit_mri_VWM_HL_p
+features.glm_normalize=true trainer.n_repetitions=10 trainer.n_outer_folds=5
+trainer.inner_hpo_trials=20 trainer.epochs=300
+trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm"`. All 28 cells generated by
+[`slurm/submit_orbit_vwmhl_matrix.sh`](slurm/submit_orbit_vwmhl_matrix.sh)
+(`NODE=gpunode02 bash slurm/submit_orbit_vwmhl_matrix.sh`); plan
+[`2026-06-09-orbit-vwmhl-gcn-backbone-matrix.md`](docs/superpowers/plans/2026-06-09-orbit-vwmhl-gcn-backbone-matrix.md).
+
+---
+
 ## Batch 2026-06-08 — identity→VWM LayerNorm vs BatchNorm (the `model.norm` knob)
 
 **What.** Follow-up to the [2026-06-04 decomposition](#batch-2026-06-04--identityvwm-r-decomposition-reproduce-the-lost-01--nested-reproducibility):
