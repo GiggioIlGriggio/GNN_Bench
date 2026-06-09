@@ -94,10 +94,11 @@ trainer.hpo_metric=val_r2 logging.project=orbitglm
 
 The prior `checkpoints/orbit_GLM_VWMHL_gcn/` run only proves `glm_diagonal` works
 on ORBIT. The identity-concat, scprofile, and laplacian-PE presets on ORBIT are
-**untested**. Run a 1-rep / 2-fold / 2-epoch smoke per backbone on at least
-`id-glmdiag` and `lappe-glmdiag` (the two presets most likely to surface a
-node-dimension or contrast-path mismatch). Launch the 28 only after all smokes
-pass `COMPLETED`.
+**untested**. ORBIT smoke jobs are trivially cheap (N≈95, 2 epochs, 2 folds, 1 rep,
+wandb off → seconds each), so run the **full 28-cell matrix at the shrunk protocol**
+rather than a hand-picked subset — complete path coverage (every preset × every
+backbone) for the same negligible cost, and it doubles as a cluster-deploy freshness
+check. Launch the real 28 only after all 28 smokes pass `COMPLETED`.
 
 ## 7. Submission
 
