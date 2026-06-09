@@ -59,7 +59,7 @@ for b in "${BACKBONES[@]}"; do
     overrides="experiment_name=${name} features=${PRESET[$s]} dataset=orbit model=${b} labels=orbit_mri_VWM_HL_p features.glm_normalize=true ${PROTO} trainer.search_space=configs/sweeper/${SWEEPER[$b]}.yaml trainer.hpo_metric=val_r2 logging.project=${PROJECT}${EXTRA:+ $EXTRA}"
     export_arg="--export=ALL,RUN_ARGS=${overrides}"
     if [[ "$DRY_RUN" == "1" ]]; then
-      printf 'cluster-submit --node %s %s -J %s --time=%s %q\n' "$NODE" "$SCRIPT" "$name" "$TIME" "$export_arg"
+      printf '%s --node %s %s -J %s --time=%s %q\n' "$CLUSTER_SUBMIT" "$NODE" "$SCRIPT" "$name" "$TIME" "$export_arg"
     else
       echo "[submit] $name"
       "$CLUSTER_SUBMIT" --node "$NODE" "$SCRIPT" -J "$name" --time="$TIME" "$export_arg"
@@ -70,4 +70,7 @@ for b in "${BACKBONES[@]}"; do
 done
 
 echo "-----------------------------------------------------------"
-echo "${DRY_RUN:+[DRY-RUN] }${SMOKE:+[SMOKE] }cells: ${COUNT}"
+summary="cells: ${COUNT}"
+[[ "$SMOKE"   == "1" ]] && summary="[SMOKE] $summary"
+[[ "$DRY_RUN" == "1" ]] && summary="[DRY-RUN] $summary"
+echo "$summary"
