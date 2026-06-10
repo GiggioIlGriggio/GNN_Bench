@@ -161,6 +161,44 @@ run's recomputed mean-of-folds r² matched its training-log value (no drift).
 | `scprof-glmscalar` | 361050 | −0.212 ± 0.431 | −0.206 | 0.104 ± 0.266 | 0.144 ± 0.028 | 0.179 ± 0.033 | [7hdzc4df](https://wandb.ai/teampolpetta/orbitglm/runs/7hdzc4df) |
 | `lappe-glmscalar`  | 361052 | −0.726 ± 3.292 | −0.772 | 0.123 ± 0.193 | 0.160 ± 0.105 | 0.194 ± 0.104 | [s4aprc35](https://wandb.ai/teampolpetta/orbitglm/runs/s4aprc35) |
 
+**Corrected significance (ADR-0008, within backbone).** Bouckaert-Frank corrected
+resampled paired t-test over per-outer-fold r² (`scripts/compare_models.py` on all 7
+cells per backbone; `q` = Benjamini-Hochberg across the 21 within-backbone pairs). The
+three **diagonal-vs-scalar, carrier-matched** key pairs (Δ = diagonal − scalar
+mean-of-folds r²):
+
+| backbone | identity carrier (id) | scprofile carrier (scprof) | laplacian-PE carrier (lappe) |
+|---|---|---|---|
+| GCN         | Δ+0.207, p=0.418, q=0.890 (n.s.) | Δ−0.129, p=0.890, q=0.890 (n.s.) | Δ+0.735, p=0.582, q=0.890 (n.s.) |
+| GAT         | Δ+0.225, p=0.146, q=0.732 (n.s.) | Δ+0.090, p=0.873, q=0.917 (n.s.) | Δ+0.332, p=0.473, q=0.765 (n.s.) |
+| GIN         | Δ+0.609, p=0.400, q=0.764 (n.s.) | Δ−0.012, p=0.971, q=0.971 (n.s.) | Δ+0.465, p=0.379, q=0.764 (n.s.) |
+| Transformer | Δ+0.141, p=0.468, q=0.921 (n.s.) | Δ+0.147, p=0.502, q=0.921 (n.s.) | Δ+0.690, p=0.688, q=0.921 (n.s.) |
+
+**0 of 21 pairs reach BH-significance in *any* backbone** (min q 0.69–0.92) — the
+corrected per-fold test is underpowered at N≈94 (each fold's r² is on ~9–19 test
+subjects; mean-of-folds r² std reaches 3.3 on a scalar cell). Contrast PNC (N≈940),
+where lappe diagonal-vs-scalar hit q=0.013 (GAT) / q=0.001 (GIN). The ORBIT result is
+a **null from low power, not counter-evidence.**
+
+**Headline — does the PNC effect generalize to ORBIT VWM-HL?**
+1. **The diagonal/identity ordering replicates, compressed.** In all four backbones
+   the top-2 cells by both r² flavours are the two diagonal/identity cells
+   (`id-glmdiag`, `glmdiag`): pooled r² **0.09–0.15**, Pearson **0.37–0.42** —
+   ~half the PNC plateau (≈0.18–0.22 / ≈0.48), consistent with the smaller, bounded,
+   differently-defined target and 10× smaller N.
+2. **Scalar carriers collapse — the robust part.** Every `*-glmscalar` cell, every
+   backbone, has **negative pooled r²** and **Pearson ≈ 0**. The carrier-matched
+   diagonal−scalar pooled gap is positive in 11/12 cells (identity & laplacian-PE
+   carriers large; scprofile shows **no** diagonal advantage, as on PNC). Signal =
+   per-node distinctness, not scalar magnitude.
+3. **No significance, but cross-backbone consistency.** The descriptive pattern is
+   identical across 4 independent backbones; the evidence is that consistency, since
+   the corrected test can't resolve it at N≈94. No backbone *fails* the task (unlike
+   BrainGNN on PNC); cross-backbone absolute r² is confounded by attention `heads`
+   DOF (reported, not ranked).
+
+**Full report:** [`reports/2026-06-09-orbit-vwmhl-gcn-backbone-generalization.md`](reports/2026-06-09-orbit-vwmhl-gcn-backbone-generalization.md).
+
 **Command (example, gcn-orbit-sc-vwmhl-id-glmdiag).** `cluster-submit --node gpunode02
 slurm/train.sh -J gcn-orbit-sc-vwmhl-id-glmdiag --time=2-00:00:00
 "--export=ALL,RUN_ARGS=experiment_name=gcn-orbit-sc-vwmhl-id-glmdiag
