@@ -80,6 +80,32 @@ def select_runner(*, is_sweep: bool, finetuning_enabled: bool, runner: str | Non
     return "nested"
 
 
+def run_sklearn(
+    *, model_cfg, trainer_cfg, graphs, labels, logger, run_name,
+    glm_col_range, glm_normalize, label_builder, label_components, feature_config,
+):
+    """Dispatch a classical-ML (sklearn) nested-CV run. Returns NestedCVResult."""
+    from src.training.sklearn_nested_cv import SklearnNestedCrossValidator
+
+    scv = SklearnNestedCrossValidator(
+        cfg=trainer_cfg, search_space_path=trainer_cfg.search_space,
+    )
+    return scv.run(
+        estimator_name=model_cfg.name,
+        model_cfg=model_cfg,
+        dataset=graphs,
+        labels=labels,
+        logger=logger,
+        run_name=run_name,
+        num_nodes=graphs[0].num_nodes if graphs else 0,
+        glm_col_range=glm_col_range,
+        glm_normalize=glm_normalize,
+        label_builder=label_builder,
+        label_components=label_components,
+        feature_config=feature_config,
+    )
+
+
 @hydra.main(
     version_base=None,
     config_path="../configs",
@@ -288,6 +314,27 @@ def main(cfg: DictConfig) -> None:
             std_edges=std_edges,
         )
     )
+
+    # ------------------------------------------------------------------
+    # 5b) Classical-ML (sklearn) baselines bypass the torch model factory,
+    #     model summary, and select_runner — they have no torch module.
+    # ------------------------------------------------------------------
+    if model_cfg.kind == "sklearn":
+        from src.training.run_identity import build_run_name
+
+        log.info("Classical-ML runner — estimator=%s input=%s",
+                 model_cfg.name, model_cfg.mlp_input)
+        sk_result = run_sklearn(
+            model_cfg=model_cfg, trainer_cfg=trainer_cfg, graphs=graphs, labels=labels,
+            logger=logger, run_name=build_run_name(cfg.experiment_name),
+            glm_col_range=glm_col_range, glm_normalize=feature_cfg.glm_normalize,
+            label_builder=label_builder, label_components=label_components,
+            feature_config=feature_cfg.model_dump(),
+        )
+        log.info("Classical-ML nested CV complete — mean=%s  std=%s",
+                 sk_result.mean_metrics, sk_result.std_metrics)
+        logger.finish()
+        return
 
     # ------------------------------------------------------------------
     # 6) Define model factory (called fresh per fold / per trial)
