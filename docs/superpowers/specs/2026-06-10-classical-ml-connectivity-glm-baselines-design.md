@@ -49,7 +49,7 @@ age is not the question there). Connectivity baselines cover both targets.
 | Protocol | 10 reps × 5 outer folds × 20 inner Optuna trials, maximize `r2` | Mirrors GNN batches; output feeds `scripts/compare_models.py` |
 | Feature standardization | Per-fold `StandardScaler` fit on **train only**, applied to all sklearn estimators | Required for ElasticNet; harmless for XGBoost; leakage-safe |
 | wandb project | **`baselines`** (new project) | Isolate baselines from GNN sweeps |
-| Compute | Cluster: sklearn on **CPU nodes**, torch MLP on GPU nodes | sklearn is CPU-only and must not consume GPU allocation. CPU-node support is a **prerequisite** handed off separately — see §10 |
+| Compute | Cluster: sklearn on **CPU nodes**, torch MLP on GPU nodes | sklearn is CPU-only and must not consume GPU allocation. CPU-node support has **landed** in the cluster-helper skill (user, 2026-06-10) — see §10 |
 
 ## 4. Components — reuse vs refactor vs new
 
@@ -135,8 +135,15 @@ paths):**
 - `logging.project=baselines`.
 - Naming: `<est>-<dataset>-<sc|fc|glm>-<age|vwm>` — e.g. `xgb-pnc-sc-vwm`,
   `enet-orbit-fc-age`, `mlp-pnc-glm-vwm`.
-- Full-matrix **smoke** (1 rep / 2 fold / 2 trial, wandb off) before launch to
-  validate every estimator × input × dataset path and deploy freshness.
+- **Two-stage validation before the full launch:**
+  1. **Pipeline smoke** (1 rep / 2 fold / 2 trial, wandb off) over every
+     estimator × input × dataset path — proves it runs end-to-end and the deploy
+     is fresh. Fast, throwaway (`smoke-*` names).
+  2. **r² sanity check** (the user's requirement): a few **real-ish** cells run
+     long enough to produce a trustworthy r², then compared against expectations
+     (§8a) to catch *silent correctness bugs* (label misalignment, wrong feature
+     vector, leakage) that a "it ran" smoke would miss. Only after this passes do
+     we launch the full 30-run matrix.
 - Backfill results into `EXPERIMENTS.md` + a `reports/` report; run
   `compare_models.py` for baseline-vs-GNN stats.
 
@@ -152,6 +159,25 @@ paths):**
 - **Determinism:** assert the sklearn runner and the GNN runner enumerate the
   same `(rep, fold)` index sets for the same `labels` + seeds.
 
+## 8a. r² sanity expectations (pre-launch gate)
+
+Before the full matrix, run a small set of **anchor cells** at a real-ish budget
+(e.g. 3 reps / 5 folds / ~10 trials) and confirm the pooled r² is roughly where
+domain knowledge says it should be. The point is to catch silent wiring bugs, not
+to chase exact numbers. Gate criteria:
+
+| Anchor cell | Expectation | Fails if |
+|---|---|---|
+| **FC → age, PNC** (ElasticNet **and** XGBoost) | **Clearly positive**, substantial (functional connectivity predicts age strongly; literature r² ≳ 0.3–0.5, ElasticNet often strong) | r² ≈ 0 or negative ⇒ label misalignment / wrong feature vector / leakage-inverted |
+| **SC → age, PNC** | Positive, typically lower than FC→age | strongly negative |
+| **GLM → VWM, PNC** (ElasticNet) | Mildly positive, in the neighbourhood of the GNN GLM cells (GNN diagonal pooled r² ~0.18–0.22; a linear/tree model on the 400-vec should land *somewhere positive*, ~0.05–0.2) | strongly negative |
+| **Any ORBIT cell** | High variance at N≈95; judge on **pooled r² + Pearson**, not mean-of-folds | use as direction-only, not a hard gate |
+
+Anchor primarily on **FC→age (PNC)**: it is the most predictable target and the
+cleanest "is the pipeline correct" signal. If age is recovered well but VWM is
+near zero, that's a *scientific* result, not a bug. If even age fails, **stop and
+debug** before launching anything.
+
 ## 9. Risks / notes
 
 - **p ≫ n:** ~79,800 features vs N≈940 (PNC) / N≈95 (ORBIT). ElasticNet/XGBoost
@@ -162,11 +188,11 @@ paths):**
   baseline-vs-GNN contrasts transfer.
 - StandardScaler on a ~79,800-dim sparse-ish vector is fine in memory at this N.
 
-## 10. Dependency: CPU-node support (handed off)
+## 10. CPU-node support (landed)
 
-sklearn jobs must run on CPU nodes and must not consume GPU allocation. The
-cluster-helper skill is currently GPU-only, so CPU-node discovery + integration
-was **handed off to a separate fresh agent**:
-`/tmp/handoff-cluster-cpu-nodes.md`. The sklearn submissions in §7 depend on that
-landing first (or a manual CPU `--partition/--qos` as a stopgap). The torch MLP
-runs do not depend on it.
+sklearn jobs run on CPU nodes and must not consume GPU allocation. CPU-node
+support has been **added to the cluster-helper skill** (user, 2026-06-10; the
+exploration/integration originally handed off via
+`/tmp/handoff-cluster-cpu-nodes.md`). The plan should confirm the current CPU
+node/partition/QoS names from the updated skill (`cluster-gpus`/`cluster-cpus`
+listing) before submitting. The torch MLP runs continue to target GPU nodes.
