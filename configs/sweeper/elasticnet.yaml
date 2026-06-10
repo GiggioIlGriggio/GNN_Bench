@@ -1,0 +1,9 @@
+# @package hydra.sweeper
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 20
+params:
+  model.model_params.alpha: tag(log, interval(0.001, 10.0))
+  model.model_params.l1_ratio: interval(0.05, 0.95)

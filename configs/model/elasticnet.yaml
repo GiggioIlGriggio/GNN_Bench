@@ -1,0 +1,7 @@
+name: elasticnet
+kind: sklearn
+mlp_input: adjacency          # adjacency (SC/FC) | node_features (GLM); set per run
+mlp_adjacency_type: weighted
+model_params:
+  alpha: 1.0
+  l1_ratio: 0.5

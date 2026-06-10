@@ -1,0 +1,14 @@
+# @package hydra.sweeper
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 20
+params:
+  model.model_params.n_estimators: choice(200, 400, 600, 800, 1000)
+  model.model_params.max_depth: range(2, 7)
+  model.model_params.learning_rate: tag(log, interval(0.01, 0.3))
+  model.model_params.subsample: interval(0.6, 1.0)
+  model.model_params.colsample_bytree: interval(0.3, 1.0)
+  model.model_params.min_child_weight: range(1, 11)
+  model.model_params.reg_lambda: tag(log, interval(0.01, 10.0))

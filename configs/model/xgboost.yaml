@@ -1,0 +1,12 @@
+name: xgboost
+kind: sklearn
+mlp_input: adjacency
+mlp_adjacency_type: weighted
+model_params:
+  n_estimators: 400
+  max_depth: 4
+  learning_rate: 0.1
+  subsample: 0.9
+  colsample_bytree: 0.6
+  min_child_weight: 3
+  reg_lambda: 1.0
