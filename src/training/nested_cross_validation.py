@@ -38,7 +38,6 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch_geometric.data
-from sklearn.model_selection import StratifiedKFold
 from torch_geometric.loader import DataLoader
 
 from src.configs.model_config import ModelConfig
@@ -53,6 +52,9 @@ from src.training.search_space import (
     load_sweeper_params,
     parse_search_space,
 )
+from src.training.splits import inner_split as _shared_inner_split
+from src.training.splits import outer_folds as _shared_outer_folds
+from src.training.splits import stratify_bins as _shared_stratify_bins
 from src.training.trainer import Trainer
 
 if TYPE_CHECKING:
@@ -290,40 +292,41 @@ class NestedCrossValidator:
         # label vector).
         bins = self._stratify_bins(labels)
 
-        for rep, outer_seed in enumerate(outer_seeds):
-            log.info("=== Repetition %d / %d (seed=%d) ===",
-                     rep + 1, self.cfg.n_repetitions, outer_seed)
-            skf = StratifiedKFold(
-                n_splits=n_outer, shuffle=True, random_state=outer_seed,
+        all_folds = _shared_outer_folds(
+            n=len(dataset), bins=bins, seeds=outer_seeds, n_outer=n_outer,
+        )
+        for flat_idx, (train_val_idx, test_idx) in enumerate(all_folds):
+            rep = flat_idx // n_outer
+            fold_idx = flat_idx % n_outer
+            outer_seed = outer_seeds[rep]
+            if fold_idx == 0:
+                log.info("=== Repetition %d / %d (seed=%d) ===",
+                         rep + 1, self.cfg.n_repetitions, outer_seed)
+            fr = self._run_outer_fold(
+                rep=rep,
+                fold=fold_idx,
+                outer_seed=outer_seed,
+                train_val_idx=train_val_idx,
+                test_idx=test_idx,
+                dataset=dataset,
+                labels=labels,
+                bins=bins,
+                base_model_cfg=base_model_cfg,
+                model_factory=model_factory,
+                logger=logger,
+                device=device,
+                label_builder=label_builder,
+                label_components=label_components,
+                glm_col_range=glm_col_range,
+                glm_normalize=glm_normalize,
+                feature_config=feature_config,
+                ckpt_root=ckpt_root,
             )
-            for fold_idx, (train_val_idx, test_idx) in enumerate(
-                skf.split(np.arange(len(dataset)), bins)
-            ):
-                fr = self._run_outer_fold(
-                    rep=rep,
-                    fold=fold_idx,
-                    outer_seed=outer_seed,
-                    train_val_idx=train_val_idx.tolist(),
-                    test_idx=test_idx.tolist(),
-                    dataset=dataset,
-                    labels=labels,
-                    bins=bins,
-                    base_model_cfg=base_model_cfg,
-                    model_factory=model_factory,
-                    logger=logger,
-                    device=device,
-                    label_builder=label_builder,
-                    label_components=label_components,
-                    glm_col_range=glm_col_range,
-                    glm_normalize=glm_normalize,
-                    feature_config=feature_config,
-                    ckpt_root=ckpt_root,
-                )
-                fold_results.append(fr)
-                log.info(
-                    "rep=%d fold=%d outer-test: %s",
-                    rep, fold_idx, fr.outer_test_metrics,
-                )
+            fold_results.append(fr)
+            log.info(
+                "rep=%d fold=%d outer-test: %s",
+                rep, fold_idx, fr.outer_test_metrics,
+            )
 
         mean_metrics, std_metrics = _aggregate(fold_results)
         result = NestedCVResult(
@@ -686,9 +689,7 @@ class NestedCrossValidator:
     # ------------------------------------------------------------------
 
     def _stratify_bins(self, labels: np.ndarray) -> np.ndarray:
-        return pd.qcut(
-            labels, q=self.cfg.stratify_bins, labels=False, duplicates="drop",
-        )
+        return _shared_stratify_bins(labels, self.cfg.stratify_bins)
 
     def _inner_split(
         self, train_val_idx: List[int], bins: np.ndarray, inner_seed: int,
@@ -698,10 +699,7 @@ class NestedCrossValidator:
         Bins are taken from the global label binning (consistent with
         ADR-0003) and indexed into via ``train_val_idx``.
         """
-        idx_arr = np.asarray(train_val_idx)
-        skf = StratifiedKFold(n_splits=4, shuffle=True, random_state=inner_seed)
-        first_train, first_val = next(skf.split(idx_arr, bins[idx_arr]))
-        return idx_arr[first_train].tolist(), idx_arr[first_val].tolist()
+        return _shared_inner_split(train_val_idx, bins, inner_seed)
 
     def _make_split_loaders(
         self,
