@@ -27,6 +27,192 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-09 — VWM-HL GLM node-features × backbone generalization on ORBIT (GCN/GAT/GIN/Transformer)
+
+**What.** Reproduces the [2026-06-04 PNC backbone-generalization
+batch](#batch-2026-06-04--vwm-glm-node-features--backbone-generalization-gatgintransformerbraingnn)
+with two substitutions: **BrainGNN → GCN** (BrainGNN sat at the no-skill floor on
+PNC, so it's replaced by GCN, which is also the ADR-0013 matched-HPO *base*) and
+**PNC → ORBIT**. The full 7-cell node-feature matrix is run on four backbones —
+**GCN, GAT, GIN, Graph Transformer** — holding the 2026-06-04 protocol fixed and
+changing only `dataset`, `labels`, and the backbone+sweeper. 28 runs, jobs
+**361026–361053**, submitted 2026-06-09 to `gpunode02`, on SHA **`c6997d5`**
+(branch `feature/orbit-vwmhl-backbone-matrix`; config + submit-script only, **no
+training-code change**, design spec
+[`2026-06-09-orbit-vwmhl-gcn-backbone-matrix-design.md`](docs/superpowers/specs/2026-06-09-orbit-vwmhl-gcn-backbone-matrix-design.md)).
+The **full 28-cell matrix passed a 1-rep/2-fold/2-epoch smoke** (jobs 360996 +
+360997–361024, all `COMPLETED 0:0`, wandb off) before launch — validating every
+preset × backbone path on ORBIT and deploy freshness.
+
+**Shared recipe (identical to 2026-06-04 except dataset/label/backbone+sweeper).**
+`dataset=orbit model=<backbone> labels=orbit_mri_VWM_HL_p features.glm_normalize=true
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 trainer.search_space=configs/sweeper/<sweeper>.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm`, `--time=2-00:00:00`, wandb
+entity `teampolpetta`.
+
+**Matched HPO (ADR-0013, GCN dropped into BrainGNN's slot).** Optimizer held out of
+HPO for every backbone:
+- **GCN / GIN** → `gcn_embedding_dim.yaml` (the matched base, no personalization).
+- **GAT / Transformer** → `gat_embedding_dim.yaml` / `transformer_embedding_dim.yaml`
+  = base + `model.heads: choice(1,2,4,8)`.
+
+> **⚠️ Caveat — small N.** ORBIT VWM-HL has **N≈95** (bounded by GLM-map coverage:
+> 101 maps / 129 structural / 130 non-null labels), ~10× smaller than PNC's ~940.
+> Mean-of-folds r² is volatile at this N (the prior `orbit_GLM_VWMHL_gcn` GCN run
+> gave per-fold r² −0.43…+0.27 with Pearson steady ~0.4), so the headline will lean
+> on **pooled r² + Pearson r**. The label is a **bounded proportion-correct**
+> (high-load, [0.11, 0.98]), *not* PNC's unbounded d-prime — so **absolute r² is not
+> comparable to PNC**; only the *within-batch* contrasts (diagonal-vs-scalar, across
+> backbones) transfer. Nondeterminism unaddressed (single noisy draw per cell, same
+> as 2026-06-04).
+
+**Submission manifest** (results backfilled per backbone once the jobs finish).
+Per-cell suffix → features preset: `glmdiag`→`glm_diagonal`,
+`id-glmscalar`→`identity_glm_scalar`, `id-glmdiag`→`identity_glm_diagonal`,
+`scprof-glmscalar`→`scprofile_glm_scalar`, `scprof-glmdiag`→`scprofile_glm_diagonal`,
+`lappe-glmscalar`→`laplacian_pe_glm_scalar`, `lappe-glmdiag`→`laplacian_pe_glm_diagonal`.
+
+| Job | experiment_name | backbone | sweeper | R² (mean-of-folds) | R² (pooled) |
+|---|---|---|---|---|---|
+| 361026 | `gcn-orbit-sc-vwmhl-glmdiag`          | gcn | gcn_embedding_dim | 0.081 ± 0.235 | 0.092 |
+| 361027 | `gcn-orbit-sc-vwmhl-id-glmscalar`     | gcn | gcn_embedding_dim | −0.104 ± 0.425 | −0.091 |
+| 361028 | `gcn-orbit-sc-vwmhl-id-glmdiag`       | gcn | gcn_embedding_dim | 0.103 ± 0.235 | 0.115 |
+| 361029 | `gcn-orbit-sc-vwmhl-scprof-glmscalar` | gcn | gcn_embedding_dim | −0.312 ± 0.935 | −0.285 |
+| 361030 | `gcn-orbit-sc-vwmhl-scprof-glmdiag`   | gcn | gcn_embedding_dim | −0.441 ± 1.542 | −0.441 |
+| 361031 | `gcn-orbit-sc-vwmhl-lappe-glmscalar`  | gcn | gcn_embedding_dim | −0.787 ± 2.511 | −0.672 |
+| 361032 | `gcn-orbit-sc-vwmhl-lappe-glmdiag`    | gcn | gcn_embedding_dim | −0.052 ± 0.512 | −0.044 |
+| 361033 | `gat-orbit-sc-vwmhl-glmdiag`          | gat | gat_embedding_dim | 0.100 ± 0.215 | 0.113 |
+| 361034 | `gat-orbit-sc-vwmhl-id-glmscalar`     | gat | gat_embedding_dim | −0.089 ± 0.253 | −0.076 |
+| 361035 | `gat-orbit-sc-vwmhl-id-glmdiag`       | gat | gat_embedding_dim | 0.136 ± 0.211 | 0.146 |
+| 361036 | `gat-orbit-sc-vwmhl-scprof-glmscalar` | gat | gat_embedding_dim | −0.420 ± 0.952 | −0.412 |
+| 361037 | `gat-orbit-sc-vwmhl-scprof-glmdiag`   | gat | gat_embedding_dim | −0.330 ± 0.491 | −0.320 |
+| 361038 | `gat-orbit-sc-vwmhl-lappe-glmscalar`  | gat | gat_embedding_dim | −0.252 ± 0.736 | −0.261 |
+| 361039 | `gat-orbit-sc-vwmhl-lappe-glmdiag`    | gat | gat_embedding_dim | 0.080 ± 0.358 | 0.099 |
+| 361040 | `gin-orbit-sc-vwmhl-glmdiag`          | gin | gcn_embedding_dim | 0.121 ± 0.230 | 0.130 |
+| 361041 | `gin-orbit-sc-vwmhl-id-glmscalar`     | gin | gcn_embedding_dim | −0.510 ± 1.417 | −0.410 |
+| 361042 | `gin-orbit-sc-vwmhl-id-glmdiag`       | gin | gcn_embedding_dim | 0.099 ± 0.253 | 0.115 |
+| 361043 | `gin-orbit-sc-vwmhl-scprof-glmscalar` | gin | gcn_embedding_dim | −0.305 ± 0.400 | −0.274 |
+| 361044 | `gin-orbit-sc-vwmhl-scprof-glmdiag`   | gin | gcn_embedding_dim | −0.317 ± 0.535 | −0.279 |
+| 361045 | `gin-orbit-sc-vwmhl-lappe-glmscalar`  | gin | gcn_embedding_dim | −0.436 ± 0.870 | −0.421 |
+| 361046 | `gin-orbit-sc-vwmhl-lappe-glmdiag`    | gin | gcn_embedding_dim | 0.029 ± 0.415 | 0.025 |
+| 361047 | `transformer-orbit-sc-vwmhl-glmdiag`          | transformer | transformer_embedding_dim | 0.092 ± 0.213 | 0.101 |
+| 361048 | `transformer-orbit-sc-vwmhl-id-glmscalar`     | transformer | transformer_embedding_dim | −0.020 ± 0.354 | −0.009 |
+| 361049 | `transformer-orbit-sc-vwmhl-id-glmdiag`       | transformer | transformer_embedding_dim | 0.121 ± 0.217 | 0.126 |
+| 361050 | `transformer-orbit-sc-vwmhl-scprof-glmscalar` | transformer | transformer_embedding_dim | −0.212 ± 0.431 | −0.206 |
+| 361051 | `transformer-orbit-sc-vwmhl-scprof-glmdiag`   | transformer | transformer_embedding_dim | −0.065 ± 0.209 | −0.060 |
+| 361052 | `transformer-orbit-sc-vwmhl-lappe-glmscalar`  | transformer | transformer_embedding_dim | −0.726 ± 3.292 | −0.772 |
+| 361053 | `transformer-orbit-sc-vwmhl-lappe-glmdiag`    | transformer | transformer_embedding_dim | −0.036 ± 0.517 | −0.020 |
+
+**Results — full metrics, per backbone** (sorted by mean-of-folds r², the tuning
+metric; N=50 outer folds = 10 reps × 5 folds; pooled = one r² over all **940**
+out-of-fold predictions vs the global mean → **N=94** effective subjects). All 28
+`COMPLETED 0:0`. `±` is dispersion across folds, **not** a standard error (folds are
+correlated, and at N≈94 each fold's r² is computed on only ~9–19 test subjects —
+hence the huge ± on the scalar cells). Recovered from wandb (entity `teampolpetta`,
+project `orbitglm`) + per-run `checkpoints/<name>-<jobid>/` (ADR-0012); each pooled
+run's recomputed mean-of-folds r² matched its training-log value (no drift).
+
+**GCN** (`gcn_embedding_dim` base sweeper):
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `id-glmdiag`       | 361028 | **0.103 ± 0.235** | 0.115 | 0.422 ± 0.178 | 0.124 ± 0.019 | 0.154 ± 0.024 | [m647wkrt](https://wandb.ai/teampolpetta/orbitglm/runs/m647wkrt) |
+| `glmdiag`          | 361026 | 0.081 ± 0.235 | 0.092 | 0.414 ± 0.184 | 0.124 ± 0.017 | 0.156 ± 0.022 | [vw3xjerq](https://wandb.ai/teampolpetta/orbitglm/runs/vw3xjerq) |
+| `lappe-glmdiag`    | 361032 | −0.052 ± 0.512 | −0.044 | 0.359 ± 0.243 | 0.132 ± 0.033 | 0.165 ± 0.038 | [xvax98r5](https://wandb.ai/teampolpetta/orbitglm/runs/xvax98r5) |
+| `id-glmscalar`     | 361027 | −0.104 ± 0.425 | −0.091 | 0.274 ± 0.185 | 0.135 ± 0.026 | 0.170 ± 0.031 | [4ra2zk12](https://wandb.ai/teampolpetta/orbitglm/runs/4ra2zk12) |
+| `scprof-glmscalar` | 361029 | −0.312 ± 0.935 | −0.285 | 0.133 ± 0.241 | 0.147 ± 0.044 | 0.182 ± 0.048 | [kz46fswd](https://wandb.ai/teampolpetta/orbitglm/runs/kz46fswd) |
+| `scprof-glmdiag`   | 361030 | −0.441 ± 1.542 | −0.441 | 0.179 ± 0.231 | 0.152 ± 0.068 | 0.187 ± 0.069 | [rivz44qw](https://wandb.ai/teampolpetta/orbitglm/runs/rivz44qw) |
+| `lappe-glmscalar`  | 361031 | −0.787 ± 2.511 | −0.672 | 0.021 ± 0.217 | 0.162 ± 0.064 | 0.200 ± 0.078 | [svy4wzro](https://wandb.ai/teampolpetta/orbitglm/runs/svy4wzro) |
+
+**GAT** (`gat_embedding_dim` sweeper):
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `id-glmdiag`       | 361035 | **0.136 ± 0.211** | 0.146 | 0.457 ± 0.194 | 0.123 ± 0.018 | 0.151 ± 0.022 | [hf3wpfoz](https://wandb.ai/teampolpetta/orbitglm/runs/hf3wpfoz) |
+| `glmdiag`          | 361033 | 0.100 ± 0.215 | 0.113 | 0.399 ± 0.186 | 0.124 ± 0.018 | 0.155 ± 0.021 | [y8ay02to](https://wandb.ai/teampolpetta/orbitglm/runs/y8ay02to) |
+| `lappe-glmdiag`    | 361039 | 0.080 ± 0.358 | 0.099 | 0.422 ± 0.204 | 0.123 ± 0.022 | 0.155 ± 0.028 | [9rzeu5we](https://wandb.ai/teampolpetta/orbitglm/runs/9rzeu5we) |
+| `id-glmscalar`     | 361034 | −0.089 ± 0.253 | −0.076 | 0.251 ± 0.200 | 0.136 ± 0.019 | 0.170 ± 0.024 | [80w0cgc5](https://wandb.ai/teampolpetta/orbitglm/runs/80w0cgc5) |
+| `lappe-glmscalar`  | 361038 | −0.252 ± 0.736 | −0.261 | 0.048 ± 0.192 | 0.144 ± 0.036 | 0.180 ± 0.047 | [2rlwc6k7](https://wandb.ai/teampolpetta/orbitglm/runs/2rlwc6k7) |
+| `scprof-glmdiag`   | 361037 | −0.330 ± 0.491 | −0.320 | 0.085 ± 0.196 | 0.150 ± 0.026 | 0.187 ± 0.035 | [x6m8goyz](https://wandb.ai/teampolpetta/orbitglm/runs/x6m8goyz) |
+| `scprof-glmscalar` | 361036 | −0.420 ± 0.952 | −0.412 | 0.036 ± 0.239 | 0.150 ± 0.026 | 0.191 ± 0.049 | [zh6448xm](https://wandb.ai/teampolpetta/orbitglm/runs/zh6448xm) |
+
+**GIN** (`gcn_embedding_dim` base sweeper, no personalization):
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `glmdiag`          | 361040 | **0.121 ± 0.230** | 0.130 | 0.425 ± 0.203 | 0.123 ± 0.018 | 0.153 ± 0.024 | [m2ywnf3u](https://wandb.ai/teampolpetta/orbitglm/runs/m2ywnf3u) |
+| `id-glmdiag`       | 361042 | 0.099 ± 0.253 | 0.115 | 0.391 ± 0.220 | 0.123 ± 0.019 | 0.154 ± 0.023 | [pt1epl2k](https://wandb.ai/teampolpetta/orbitglm/runs/pt1epl2k) |
+| `lappe-glmdiag`    | 361046 | 0.029 ± 0.415 | 0.025 | 0.384 ± 0.193 | 0.128 ± 0.027 | 0.160 ± 0.034 | [q7rd16c8](https://wandb.ai/teampolpetta/orbitglm/runs/q7rd16c8) |
+| `scprof-glmscalar` | 361043 | −0.305 ± 0.400 | −0.274 | 0.088 ± 0.226 | 0.146 ± 0.026 | 0.185 ± 0.027 | [4xlsf2r1](https://wandb.ai/teampolpetta/orbitglm/runs/4xlsf2r1) |
+| `scprof-glmdiag`   | 361044 | −0.317 ± 0.535 | −0.279 | 0.188 ± 0.229 | 0.150 ± 0.031 | 0.184 ± 0.033 | [fes2kdh5](https://wandb.ai/teampolpetta/orbitglm/runs/fes2kdh5) |
+| `lappe-glmscalar`  | 361045 | −0.436 ± 0.870 | −0.421 | 0.035 ± 0.248 | 0.152 ± 0.036 | 0.191 ± 0.049 | [n97h5az6](https://wandb.ai/teampolpetta/orbitglm/runs/n97h5az6) |
+| `id-glmscalar`     | 361041 | −0.510 ± 1.417 | −0.410 | 0.111 ± 0.206 | 0.152 ± 0.028 | 0.192 ± 0.046 | [mxfurbr8](https://wandb.ai/teampolpetta/orbitglm/runs/mxfurbr8) |
+
+**Graph Transformer** (`transformer_embedding_dim` sweeper):
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `id-glmdiag`       | 361049 | **0.121 ± 0.217** | 0.126 | 0.427 ± 0.202 | 0.123 ± 0.020 | 0.153 ± 0.024 | [95aedokn](https://wandb.ai/teampolpetta/orbitglm/runs/95aedokn) |
+| `glmdiag`          | 361047 | 0.092 ± 0.213 | 0.101 | 0.421 ± 0.172 | 0.122 ± 0.018 | 0.155 ± 0.024 | [e228hsa1](https://wandb.ai/teampolpetta/orbitglm/runs/e228hsa1) |
+| `id-glmscalar`     | 361048 | −0.020 ± 0.354 | −0.009 | 0.336 ± 0.216 | 0.131 ± 0.025 | 0.164 ± 0.028 | [82di6njp](https://wandb.ai/teampolpetta/orbitglm/runs/82di6njp) |
+| `lappe-glmdiag`    | 361053 | −0.036 ± 0.517 | −0.020 | 0.389 ± 0.180 | 0.130 ± 0.030 | 0.164 ± 0.035 | [a308ubj3](https://wandb.ai/teampolpetta/orbitglm/runs/a308ubj3) |
+| `scprof-glmdiag`   | 361051 | −0.065 ± 0.209 | −0.060 | 0.198 ± 0.206 | 0.134 ± 0.017 | 0.169 ± 0.023 | [d7781naf](https://wandb.ai/teampolpetta/orbitglm/runs/d7781naf) |
+| `scprof-glmscalar` | 361050 | −0.212 ± 0.431 | −0.206 | 0.104 ± 0.266 | 0.144 ± 0.028 | 0.179 ± 0.033 | [7hdzc4df](https://wandb.ai/teampolpetta/orbitglm/runs/7hdzc4df) |
+| `lappe-glmscalar`  | 361052 | −0.726 ± 3.292 | −0.772 | 0.123 ± 0.193 | 0.160 ± 0.105 | 0.194 ± 0.104 | [s4aprc35](https://wandb.ai/teampolpetta/orbitglm/runs/s4aprc35) |
+
+**Corrected significance (ADR-0008, within backbone).** Bouckaert-Frank corrected
+resampled paired t-test over per-outer-fold r² (`scripts/compare_models.py` on all 7
+cells per backbone; `q` = Benjamini-Hochberg across the 21 within-backbone pairs). The
+three **diagonal-vs-scalar, carrier-matched** key pairs (Δ = diagonal − scalar
+mean-of-folds r²):
+
+| backbone | identity carrier (id) | scprofile carrier (scprof) | laplacian-PE carrier (lappe) |
+|---|---|---|---|
+| GCN         | Δ+0.207, p=0.418, q=0.890 (n.s.) | Δ−0.129, p=0.890, q=0.890 (n.s.) | Δ+0.735, p=0.582, q=0.890 (n.s.) |
+| GAT         | Δ+0.225, p=0.146, q=0.732 (n.s.) | Δ+0.090, p=0.873, q=0.917 (n.s.) | Δ+0.332, p=0.473, q=0.765 (n.s.) |
+| GIN         | Δ+0.609, p=0.400, q=0.764 (n.s.) | Δ−0.012, p=0.971, q=0.971 (n.s.) | Δ+0.465, p=0.379, q=0.764 (n.s.) |
+| Transformer | Δ+0.141, p=0.468, q=0.921 (n.s.) | Δ+0.147, p=0.502, q=0.921 (n.s.) | Δ+0.690, p=0.688, q=0.921 (n.s.) |
+
+**0 of 21 pairs reach BH-significance in *any* backbone** (min q 0.69–0.92) — the
+corrected per-fold test is underpowered at N≈94 (each fold's r² is on ~9–19 test
+subjects; mean-of-folds r² std reaches 3.3 on a scalar cell). Contrast PNC (N≈940),
+where lappe diagonal-vs-scalar hit q=0.013 (GAT) / q=0.001 (GIN). The ORBIT result is
+a **null from low power, not counter-evidence.**
+
+**Headline — does the PNC effect generalize to ORBIT VWM-HL?**
+1. **The diagonal/identity ordering replicates, compressed.** In all four backbones
+   the top-2 cells by both r² flavours are the two diagonal/identity cells
+   (`id-glmdiag`, `glmdiag`): pooled r² **0.09–0.15**, Pearson **0.37–0.42** —
+   ~half the PNC plateau (≈0.18–0.22 / ≈0.48), consistent with the smaller, bounded,
+   differently-defined target and 10× smaller N.
+2. **Scalar carriers collapse — the robust part.** Every `*-glmscalar` cell, every
+   backbone, has **negative pooled r²** and **Pearson ≈ 0**. The carrier-matched
+   diagonal−scalar pooled gap is positive in 11/12 cells (identity & laplacian-PE
+   carriers large; scprofile shows **no** diagonal advantage, as on PNC). Signal =
+   per-node distinctness, not scalar magnitude.
+3. **No significance, but cross-backbone consistency.** The descriptive pattern is
+   identical across 4 independent backbones; the evidence is that consistency, since
+   the corrected test can't resolve it at N≈94. No backbone *fails* the task (unlike
+   BrainGNN on PNC); cross-backbone absolute r² is confounded by attention `heads`
+   DOF (reported, not ranked).
+
+**Full report:** [`reports/2026-06-09-orbit-vwmhl-gcn-backbone-generalization.md`](reports/2026-06-09-orbit-vwmhl-gcn-backbone-generalization.md).
+
+**Command (example, gcn-orbit-sc-vwmhl-id-glmdiag).** `cluster-submit --node gpunode02
+slurm/train.sh -J gcn-orbit-sc-vwmhl-id-glmdiag --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=gcn-orbit-sc-vwmhl-id-glmdiag
+features=identity_glm_diagonal dataset=orbit model=gcn labels=orbit_mri_VWM_HL_p
+features.glm_normalize=true trainer.n_repetitions=10 trainer.n_outer_folds=5
+trainer.inner_hpo_trials=20 trainer.epochs=300
+trainer.search_space=configs/sweeper/gcn_embedding_dim.yaml
+trainer.hpo_metric=val_r2 logging.project=orbitglm"`. All 28 cells generated by
+[`slurm/submit_orbit_vwmhl_matrix.sh`](slurm/submit_orbit_vwmhl_matrix.sh)
+(`NODE=gpunode02 bash slurm/submit_orbit_vwmhl_matrix.sh`); plan
+[`2026-06-09-orbit-vwmhl-gcn-backbone-matrix.md`](docs/superpowers/plans/2026-06-09-orbit-vwmhl-gcn-backbone-matrix.md).
+
+---
+
 ## Batch 2026-06-08 — identity→VWM LayerNorm vs BatchNorm (the `model.norm` knob)
 
 **What.** Follow-up to the [2026-06-04 decomposition](#batch-2026-06-04--identityvwm-r-decomposition-reproduce-the-lost-01--nested-reproducibility):
