@@ -1,0 +1,4 @@
+model,enet-pnc-sc-age,mlp-pnc-sc-age,xgb-pnc-sc-age
+enet-pnc-sc-age,,0.924968,0.478384
+mlp-pnc-sc-age,0.924968,,0.677013
+xgb-pnc-sc-age,0.478384,0.677013,
