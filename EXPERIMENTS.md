@@ -27,6 +27,66 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-12 — GLM→age specificity control (does the GLM-activation vector predict age?)
+
+**Goal.** Specificity control for the 2026-06-11 headline (PNC VWM best predicted by
+the 400-dim `glm_scalar` activation vector, pooled r²≈0.23–0.25, beating connectivity
+≈0.10–0.12). The GLM vector was never used to predict **age** — so we cannot tell if
+it carries *VWM-specific* signal or is a generic developmental / SNR / engagement
+proxy that predicts everything. PNC is an 8–21yo sample where connectivity predicts
+age strongly (SC r²≈0.51, FC≈0.33), so a non-trivial GLM→age is plausible. These 3
+cells predict `age_at_cnb` from `glm_scalar`, read against the grid: **GLM→age ≈0** ⇒
+strong VWM-specificity (strengthens the headline); **moderate but <0.24** ⇒ partial
+confound; **≈ or >0.24** ⇒ the GLM vector is a generic maturation/quality proxy and
+the VWM result is not specific. Report `reports/2026-06-12-glm-age-specificity-control.md`.
+
+**Design.** Identical to the 2026-06-11 PNC GLM→VWM cells except `labels=pnc_default`
+(target `age_at_cnb`) replaces `labels=pnc_VWMdprime`. **NO code changes.** `enet` +
+`xgb` are the strict control (their sweepers do not touch `model.mlp_input`; input
+pinned to `node_features`); `mlp`'s inner HPO may pick `adjacency`/`both` input (the
+mlp sweeper sweeps `mlp_input`) — kept for symmetry with `mlp-pnc-glm-vwm`, carry the
+caveat. N = **945** subjects (993 − 48 `glm_missing`; age non-null for all) — a **+5
+superset** of the 940 GLM→VWM subjects, so GLM→age folds are **not** byte-identical to
+GLM→VWM → cross-target comparison is **magnitude-only**; within-target 3-estimator
+comparison is valid (shared N=945 / 50 folds).
+
+**Shared recipe.** 10 reps × 5 outer folds × 20 inner Optuna trials, maximize
+`val_r2`; project `baselines`, entity `teampolpetta`; branch
+`feature/glm-age-specificity-control` @ `6634879`; submitted 2026-06-12. sklearn
+(enet/xgb) → CPU (`slurm/train_sklearn.sh`, already sets `logging.project=baselines`);
+MLP → GPU (`slurm/train.sh`, epochs=300; pass `logging.project=baselines` to override
+the script's `"Baseline Launches"` default).
+
+| experiment_name | model | compute | DEPLOY_SHA | Job ID | wandb | r² (mean-of-folds) | r² (pooled) |
+|---|---|---|---|---|---|---|---|
+| `enet-pnc-glm-age` | ElasticNet | node01 (CPU) | `6634879` | 361341 | TBD | TBD | TBD |
+| `xgb-pnc-glm-age`  | XGBoost    | node02 (CPU) | `6634879` | 361342 | TBD | TBD | TBD |
+| `mlp-pnc-glm-age`  | MLP        | gpunode01/rtx2080 | `6634879` | 361343 | TBD | TBD | TBD |
+
+**Commands** (RUN_ARGS forwarded inline; only the delta from the shared recipe shown
+in prose above — the full lines):
+```
+cluster-submit --node node01 slurm/train_sklearn.sh -J enet-pnc-glm-age \
+ "--export=ALL,RUN_ARGS=experiment_name=enet-pnc-glm-age dataset=pnc model=elasticnet \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/elasticnet.yaml"
+# xgb: swap model=xgboost, search_space=configs/sweeper/xgboost.yaml, --node node02, -J xgb-pnc-glm-age
+cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J mlp-pnc-glm-age \
+ "--export=ALL,RUN_ARGS=experiment_name=mlp-pnc-glm-age dataset=pnc model=mlp \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features logging.project=baselines \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.epochs=300 trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/mlp.yaml"
+```
+
+**Reference magnitudes** (2026-06-11 batch, same N≈940 GLM input): GLM→VWM pooled r² —
+enet **0.246** / mlp 0.230 / xgb 0.226; connectivity→age — SC ≈0.50–0.52, FC ≈0.32–0.37.
+
+**Smoke gate.** All 3 passed at `n_repetitions=1 n_outer_folds=2 inner_hpo_trials=2`
+(`COMPLETED 0:0`; jobs 361338–361340): RUN_ARGS echoed, target `age_at_cnb`, N=945.
+
+**Results:** TBD (backfill after `COMPLETED`).
+
 ## Batch 2026-06-11 — Classical-ML baselines (XGBoost / ElasticNet / MLP) vs the GNN (30-run matrix)
 
 **Goal.** Non-graph baselines that learn directly from connectivity (and from the
