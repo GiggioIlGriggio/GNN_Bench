@@ -34,21 +34,28 @@ the 400-dim `glm_scalar` activation vector, pooled r²≈0.23–0.25, beating co
 ≈0.10–0.12). The GLM vector was never used to predict **age** — so we cannot tell if
 it carries *VWM-specific* signal or is a generic developmental / SNR / engagement
 proxy that predicts everything. PNC is an 8–21yo sample where connectivity predicts
-age strongly (SC r²≈0.51, FC≈0.33), so a non-trivial GLM→age is plausible. These 3
+age strongly (SC r²≈0.51, FC≈0.33), so a non-trivial GLM→age is plausible. These
 cells predict `age_at_cnb` from `glm_scalar`, read against the grid: **GLM→age ≈0** ⇒
 strong VWM-specificity (strengthens the headline); **moderate but <0.24** ⇒ partial
 confound; **≈ or >0.24** ⇒ the GLM vector is a generic maturation/quality proxy and
 the VWM result is not specific. Report `reports/2026-06-12-glm-age-specificity-control.md`.
 
 **Design.** Identical to the 2026-06-11 PNC GLM→VWM cells except `labels=pnc_default`
-(target `age_at_cnb`) replaces `labels=pnc_VWMdprime`. **NO code changes.** `enet` +
-`xgb` are the strict control (their sweepers do not touch `model.mlp_input`; input
-pinned to `node_features`); `mlp`'s inner HPO may pick `adjacency`/`both` input (the
-mlp sweeper sweeps `mlp_input`) — kept for symmetry with `mlp-pnc-glm-vwm`, carry the
-caveat. N = **945** subjects (993 − 48 `glm_missing`; age non-null for all) — a **+5
-superset** of the 940 GLM→VWM subjects, so GLM→age folds are **not** byte-identical to
-GLM→VWM → cross-target comparison is **magnitude-only**; within-target 3-estimator
-comparison is valid (shared N=945 / 50 folds).
+(target `age_at_cnb`) replaces `labels=pnc_VWMdprime`. **No pipeline code changes**
+(one config added — the pinned-input sweeper variant, below). `enet` + `xgb` are the
+strict control (their sweepers do not touch `model.mlp_input`; input pinned to
+`node_features`). The standard `mlp` sweeper **does** sweep
+`mlp_input ∈ {node_features, adjacency, both}`, and for the age target the inner HPO
+**escaped to connectivity input — GLM-only in 0/50 folds** → the sweeping
+`mlp-pnc-glm-age` measures connectivity→age (pooled 0.573 ≈ the existing
+`mlp-pnc-sc-age` 0.521), **not** GLM→age. So a 4th cell, **`mlp-pnc-glm-age-fixinput`**
+(sweeper `configs/sweeper/mlp_fixedinput.yaml` = mlp sweeper minus the
+`mlp_input`/`mlp_adjacency_type` dims, + `model.mlp_input=node_features`), pins the
+input → a genuine 3rd strict GLM-only estimator. N = **945** subjects (993 − 48
+`glm_missing`; age non-null for all) — a **+5 superset** of the 940 GLM→VWM subjects,
+so GLM→age folds are **not** byte-identical to GLM→VWM → cross-target comparison is
+**magnitude-only**; within-target 3-estimator comparison (the 3 strict cells) is valid
+(shared N=945 / 50 folds, seeds 42–51).
 
 **Shared recipe.** 10 reps × 5 outer folds × 20 inner Optuna trials, maximize
 `val_r2`; project `baselines`, entity `teampolpetta`; branch
@@ -57,11 +64,16 @@ comparison is valid (shared N=945 / 50 folds).
 MLP → GPU (`slurm/train.sh`, epochs=300; pass `logging.project=baselines` to override
 the script's `"Baseline Launches"` default).
 
+Strict GLM-only cells (the genuine GLM→age controls) first; the input-escaped sweeping
+MLP last (annotated — its 0.573 is connectivity→age, not GLM→age, so a naive r²-sort
+would mislead).
+
 | experiment_name | model | compute | DEPLOY_SHA | Job ID | wandb | r² (mean-of-folds) | r² (pooled) |
 |---|---|---|---|---|---|---|---|
-| `enet-pnc-glm-age` | ElasticNet | node01 (CPU) | `6634879` | 361341 | TBD | TBD | TBD |
-| `xgb-pnc-glm-age`  | XGBoost    | node02 (CPU) | `6634879` | 361342 | TBD | TBD | TBD |
-| `mlp-pnc-glm-age`  | MLP        | gpunode01/rtx2080 | `6634879` | 361343 | TBD | TBD | TBD |
+| `enet-pnc-glm-age` | ElasticNet | node01 (CPU) | `6634879` | 361341 | [an1jtxae](https://wandb.ai/teampolpetta/baselines/runs/an1jtxae) | 0.074 ± 0.040 | **0.075** |
+| `xgb-pnc-glm-age`  | XGBoost    | node02 (CPU) | `6634879` | 361342 | [8c51zkuu](https://wandb.ai/teampolpetta/baselines/runs/8c51zkuu) | 0.106 ± 0.046 | **0.106** |
+| `mlp-pnc-glm-age-fixinput` | MLP (input **pinned**, GLM-only) | gpunode03/rtxa6000 | `48e5d3d` | 361347 | [a0hgujtf](https://wandb.ai/teampolpetta/baselines/runs/a0hgujtf) | 0.040 ± 0.081 | **0.041** |
+| `mlp-pnc-glm-age`  | MLP (HPO **escaped → connectivity**; *not* GLM→age) | gpunode01/rtx2080 | `6634879` | 361343 | [953nb607](https://wandb.ai/teampolpetta/baselines/runs/953nb607) | 0.574 ± 0.056 | 0.573 |
 
 **Commands** (RUN_ARGS forwarded inline; only the delta from the shared recipe shown
 in prose above — the full lines):
@@ -77,15 +89,33 @@ cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J mlp-pnc-glm-age 
   features=glm_scalar labels=pnc_default model.mlp_input=node_features logging.project=baselines \
   trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
   trainer.epochs=300 trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/mlp.yaml"
+# pinned-input MLP (3rd strict estimator), DEPLOY_SHA 48e5d3d:
+cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J mlp-pnc-glm-age-fixinput \
+ "--export=ALL,RUN_ARGS=experiment_name=mlp-pnc-glm-age-fixinput dataset=pnc model=mlp \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features logging.project=baselines \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.epochs=300 trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/mlp_fixedinput.yaml"
 ```
 
 **Reference magnitudes** (2026-06-11 batch, same N≈940 GLM input): GLM→VWM pooled r² —
 enet **0.246** / mlp 0.230 / xgb 0.226; connectivity→age — SC ≈0.50–0.52, FC ≈0.32–0.37.
 
-**Smoke gate.** All 3 passed at `n_repetitions=1 n_outer_folds=2 inner_hpo_trials=2`
-(`COMPLETED 0:0`; jobs 361338–361340): RUN_ARGS echoed, target `age_at_cnb`, N=945.
+**Smoke gate.** All passed at `n_repetitions=1 n_outer_folds=2 inner_hpo_trials=2`
+(`COMPLETED 0:0`; jobs 361338–361340, + pinned-MLP smoke 361346): RUN_ARGS echoed,
+target `age_at_cnb`, N=945.
 
-**Results:** TBD (backfill after `COMPLETED`).
+**Results.** Strict GLM-only estimators (the genuine GLM→age controls): pooled r²
+**0.075** (enet) / **0.106** (xgb) / **0.041** (pinned MLP); mean-of-folds 0.074±0.040 /
+0.106±0.046 / 0.040±0.081 (N=9450 pooled = 945×10; ± = fold dispersion, not SE). All
+three **statistically indistinguishable** — corrected resampled paired t-test on `r2`,
+all pairs p_adj ≥ 0.31 (`reports/comparison/pnc-glm-age-estimators/`). The sweeping
+`mlp-pnc-glm-age` (0.573 pooled) is **connectivity→age via HPO input-escape** (`both`
+27 / `adjacency` 23 / GLM-only **0** of 50 folds), not a GLM→age number — reported as a
+positive control only. **Verdict:** GLM→age ≈0.04–0.11 ≪ GLM→VWM ≈0.23–0.25 (same
+vector; 2–6×) ≪ connectivity→age ≈0.51 SC (~5–12×) → the GLM activation pattern is
+substantially **VWM-specific**, not a generic maturation/quality proxy; the residual
+age signal is small but non-zero (partial confound). Full write-up + interpretation
+grid: `reports/2026-06-12-glm-age-specificity-control.md`.
 
 ## Batch 2026-06-11 — Classical-ML baselines (XGBoost / ElasticNet / MLP) vs the GNN (30-run matrix)
 
