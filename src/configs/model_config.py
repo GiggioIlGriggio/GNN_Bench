@@ -17,6 +17,12 @@ class ModelConfig(BaseModel):
         ...,
         description="Registered model name (must match a key in MODEL_REGISTRY).",
     )
+    kind: Literal["gnn", "sklearn"] = Field(
+        default="gnn",
+        description="Estimator family. 'gnn' (default) routes through the torch "
+        "Trainer/NestedCrossValidator; 'sklearn' routes through "
+        "SklearnNestedCrossValidator (XGBoost/ElasticNet).",
+    )
     backbone: str = Field(
         default="gcn",
         description="GNN backbone type (gcn, gat, gin, transformer).",

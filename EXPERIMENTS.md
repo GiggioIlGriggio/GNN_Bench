@@ -27,6 +27,114 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-11 — Classical-ML baselines (XGBoost / ElasticNet / MLP) vs the GNN (30-run matrix)
+
+**Goal.** Non-graph baselines that learn directly from connectivity (and from the
+GLM-activation vector), to answer two questions the GNN batches left open:
+(1) *can a non-graph model on raw connectivity match the GNN?* — the standard
+connectome-predictive-modeling sanity check; (2) *how much VWM is predictable
+from the 400-value GLM-activation vector alone (no graph)?* Estimators: **XGBoost**
+and **ElasticNet** (new sklearn path, `SklearnNestedCrossValidator`) + **MLP**
+(existing torch `model=mlp`, reused). Spec
+`docs/superpowers/specs/2026-06-10-classical-ml-connectivity-glm-baselines-design.md`,
+plan `…/plans/2026-06-10-classical-ml-baselines.md`. Report
+`reports/2026-06-11-classical-ml-baselines.md`.
+
+**Design (locked).** Connectivity feature = the GNN's **top-20% thresholded
+weighted** upper-triangle (`N(N−1)/2 = 79,800` for Schaefer-400), zeros where edges
+dropped — the exact thresholded `Data` the GNN sees (fairest head-to-head). GLM
+feature = `glm_scalar` (`contrast-2back_vs_0back`, 400-dim, 1/node). Per-fold
+`StandardScaler` fit on train only (sklearn); identical folds to the GNN via the
+shared `splits.py`; `FoldBarrier` reused for label/GLM normalization.
+
+**Shared recipe.** 10 reps × 5 outer folds × 20 inner Optuna trials, maximize
+`val_r2`; project `baselines`, entity `teampolpetta`; branch
+`feature/classical-ml-baselines` @ `c5a6f7b`; submitted 2026-06-11.
+```
+dataset=<pnc|pnc_fc|orbit|orbit_fc> model=<elasticnet|xgboost|mlp> \
+features=<default|glm_scalar> labels=<pnc_default|pnc_VWMdprime|default|orbit_mri_VWM_HL_p> \
+model.mlp_input=<adjacency|node_features> experiment_name=<cell> \
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/<model>.yaml
+```
+- **Compute.** sklearn → CPU nodes (`slurm/train_sklearn.sh`); MLP → GPU
+  (`slurm/train.sh`, epochs=300 + early-stop patience 35, the GNN protocol).
+- **XGBoost·PNC·connectivity** (79,800-dim) is ~65–70h on CPU at this budget —
+  over the 24h wall — so those 4 cells ran on **GPU** (`slurm/train.sh`,
+  `+model.model_params.device=cuda`), finishing in 2h50m–6h20m with results
+  matching ElasticNet (one benign predict-time CPU→GPU fallback warning; training
+  is on `cuda:0`).
+- **Tooling fixes this batch:** patched `cluster-submit` to forward an inline
+  `RUN_ARGS=` env var to remote sbatch (it was silently dropped → jobs ran on
+  Hydra defaults); patched `backfill-experiment-results` to recognize the sklearn
+  runner's `"Classical-ML nested CV complete"` log line.
+
+**Matrix (30 cells).** `<est>-<dataset>-<sc|fc|glm>-<age|vwm>`. Connectivity =
+`features=default model.mlp_input=adjacency`; GLM = `features=glm_scalar
+model.mlp_input=node_features` (VWM-only). All 30 `COMPLETED`.
+
+**Results** (mean ± std over the 50 outer folds; **pooled** = single r² over all
+out-of-fold predictions; sorted by pooled r². ± is fold dispersion, not a SE —
+folds are correlated, don't read as a CI). wandb project `baselines`.
+
+| experiment_name | r² (mean-of-folds) | r² (pooled) | Pearson r (mf) | MAE (mf) | RMSE (mf) | run |
+|---|---|---|---|---|---|---|
+| `mlp-pnc-sc-age`     | **0.521 ± 0.089** | **0.521** | 0.757 ± 0.041 | 1.791 ± 0.180 | 2.325 ± 0.229 | [vpurgih9](https://wandb.ai/teampolpetta/baselines/runs/vpurgih9) |
+| `enet-pnc-sc-age`    | 0.516 ± 0.056 | 0.516 | 0.722 ± 0.040 | 1.797 ± 0.084 | 2.342 ± 0.163 | [5ykfadiu](https://wandb.ai/teampolpetta/baselines/runs/5ykfadiu) |
+| `xgb-pnc-sc-age`     | 0.502 ± 0.053 | 0.501 | 0.717 ± 0.040 | 1.855 ± 0.098 | 2.377 ± 0.164 | [zmy7qnvj](https://wandb.ai/teampolpetta/baselines/runs/zmy7qnvj) |
+| `mlp-pnc-fc-age`     | 0.367 ± 0.053 | 0.367 | 0.617 ± 0.042 | 2.149 ± 0.107 | 2.692 ± 0.150 | [8gva3wko](https://wandb.ai/teampolpetta/baselines/runs/8gva3wko) |
+| `enet-pnc-fc-age`    | 0.317 ± 0.053 | 0.317 | 0.568 ± 0.046 | 2.254 ± 0.107 | 2.797 ± 0.147 | [hftn2cfa](https://wandb.ai/teampolpetta/baselines/runs/hftn2cfa) |
+| `xgb-pnc-fc-age`     | 0.315 ± 0.053 | 0.314 | 0.574 ± 0.053 | 2.270 ± 0.111 | 2.802 ± 0.151 | [ougztq7w](https://wandb.ai/teampolpetta/baselines/runs/ougztq7w) |
+| `enet-pnc-glm-vwm`   | **0.244 ± 0.045** | **0.246** | 0.504 ± 0.041 | 0.474 ± 0.019 | 0.620 ± 0.031 | [40hguv2e](https://wandb.ai/teampolpetta/baselines/runs/40hguv2e) |
+| `mlp-pnc-glm-vwm`    | 0.227 ± 0.056 | 0.230 | 0.497 ± 0.046 | 0.482 ± 0.022 | 0.627 ± 0.032 | [bo0sr78a](https://wandb.ai/teampolpetta/baselines/runs/bo0sr78a) |
+| `xgb-pnc-glm-vwm`    | 0.224 ± 0.053 | 0.226 | 0.481 ± 0.050 | 0.477 ± 0.021 | 0.628 ± 0.032 | [3ugm39e2](https://wandb.ai/teampolpetta/baselines/runs/3ugm39e2) |
+| `xgb-orbit-glm-vwm`  | 0.139 ± 0.194 | 0.143 | 0.424 ± 0.180 | 0.124 ± 0.018 | 0.152 ± 0.023 | [1uzgrvyk](https://wandb.ai/teampolpetta/baselines/runs/1uzgrvyk) |
+| `xgb-pnc-fc-vwm`     | 0.117 ± 0.046 | 0.117 | 0.347 ± 0.064 | 0.518 ± 0.024 | 0.679 ± 0.034 | [iluqg2in](https://wandb.ai/teampolpetta/baselines/runs/iluqg2in) |
+| `mlp-orbit-glm-vwm`  | 0.102 ± 0.223 | 0.116 | 0.394 ± 0.200 | 0.124 ± 0.017 | 0.154 ± 0.022 | [y9ezrfh9](https://wandb.ai/teampolpetta/baselines/runs/y9ezrfh9) |
+| `xgb-pnc-sc-vwm`     | 0.112 ± 0.044 | 0.113 | 0.344 ± 0.059 | 0.514 ± 0.020 | 0.672 ± 0.027 | [pa4s8skp](https://wandb.ai/teampolpetta/baselines/runs/pa4s8skp) |
+| `enet-pnc-sc-vwm`    | 0.109 ± 0.033 | 0.110 | 0.342 ± 0.055 | 0.515 ± 0.018 | 0.673 ± 0.025 | [4fwu06yf](https://wandb.ai/teampolpetta/baselines/runs/4fwu06yf) |
+| `mlp-pnc-fc-vwm`     | 0.101 ± 0.059 | 0.102 | 0.343 ± 0.074 | 0.520 ± 0.025 | 0.685 ± 0.034 | [mqp8bgle](https://wandb.ai/teampolpetta/baselines/runs/mqp8bgle) |
+| `enet-pnc-fc-vwm`    | 0.095 ± 0.045 | 0.095 | 0.322 ± 0.070 | 0.527 ± 0.022 | 0.688 ± 0.033 | [bhc0b4nt](https://wandb.ai/teampolpetta/baselines/runs/bhc0b4nt) |
+| `enet-orbit-glm-vwm` | 0.036 ± 0.223 | 0.049 | 0.338 ± 0.180 | 0.130 ± 0.017 | 0.160 ± 0.021 | [9biipk76](https://wandb.ai/teampolpetta/baselines/runs/9biipk76) |
+| `xgb-orbit-sc-age`   | 0.022 ± 0.120 | 0.026 | 0.214 ± 0.176 | 0.676 ± 0.055 | 0.813 ± 0.062 | [scd6zuuz](https://wandb.ai/teampolpetta/baselines/runs/scd6zuuz) |
+| `mlp-pnc-sc-vwm`     | 0.012 ± 0.141 | 0.014 | 0.282 ± 0.071 | 0.548 ± 0.045 | 0.707 ± 0.051 | [n1bvqrxs](https://wandb.ai/teampolpetta/baselines/runs/n1bvqrxs) |
+| `enet-orbit-sc-vwm`  | −0.007 ± 0.157 | −0.004 | 0.152 ± 0.206 | 0.149 ± 0.017 | 0.186 ± 0.025 | [do8a22nt](https://wandb.ai/teampolpetta/baselines/runs/do8a22nt) |
+| `enet-orbit-sc-age`  | −0.025 ± 0.120 | −0.015 | 0.164 ± 0.132 | 0.691 ± 0.046 | 0.831 ± 0.043 | [pzbt9b2i](https://wandb.ai/teampolpetta/baselines/runs/pzbt9b2i) |
+| `xgb-orbit-sc-vwm`   | −0.018 ± 0.133 | −0.019 | 0.166 ± 0.186 | 0.150 ± 0.018 | 0.188 ± 0.025 | [liljdcxn](https://wandb.ai/teampolpetta/baselines/runs/liljdcxn) |
+| `mlp-orbit-sc-vwm`   | −0.037 ± 0.189 | −0.031 | 0.276 ± 0.170 | 0.146 ± 0.017 | 0.189 ± 0.026 | [wy8tz7ye](https://wandb.ai/teampolpetta/baselines/runs/wy8tz7ye) |
+| `xgb-orbit-fc-vwm`   | −0.078 ± 0.182 | −0.058 | 0.122 ± 0.186 | 0.155 ± 0.014 | 0.190 ± 0.021 | [b2ygr7a8](https://wandb.ai/teampolpetta/baselines/runs/b2ygr7a8) |
+| `enet-orbit-fc-age`  | −0.068 ± 0.117 | −0.065 | 0.001 ± 0.107 | 0.696 ± 0.058 | 0.836 ± 0.067 | [tynk7oo4](https://wandb.ai/teampolpetta/baselines/runs/tynk7oo4) |
+| `enet-orbit-fc-vwm`  | −0.101 ± 0.176 | −0.080 | 0.048 ± 0.149 | 0.157 ± 0.011 | 0.192 ± 0.020 | [z0pgqjnn](https://wandb.ai/teampolpetta/baselines/runs/z0pgqjnn) |
+| `mlp-orbit-sc-age`   | −0.098 ± 0.210 | −0.087 | 0.230 ± 0.162 | 0.706 ± 0.064 | 0.858 ± 0.075 | [y7djeyb7](https://wandb.ai/teampolpetta/baselines/runs/y7djeyb7) |
+| `mlp-orbit-fc-age`   | −0.095 ± 0.162 | −0.087 | 0.156 ± 0.199 | 0.691 ± 0.059 | 0.845 ± 0.070 | [u6ewnp7u](https://wandb.ai/teampolpetta/baselines/runs/u6ewnp7u) |
+| `mlp-orbit-fc-vwm`   | −0.141 ± 0.222 | −0.131 | 0.148 ± 0.222 | 0.154 ± 0.017 | 0.195 ± 0.028 | [7am0p2bn](https://wandb.ai/teampolpetta/baselines/runs/7am0p2bn) |
+| `xgb-orbit-fc-age`   | −0.178 ± 0.151 | −0.170 | −0.064 ± 0.185 | 0.728 ± 0.051 | 0.877 ± 0.064 | [h0o2pnzj](https://wandb.ai/teampolpetta/baselines/runs/h0o2pnzj) |
+
+Job IDs: enet 361213–361222, xgb-CPU(ORBIT+GLM) 361223–361228, xgb-GPU(PNC-conn)
+361231–361234, mlp 361235–361244.
+
+**Findings.**
+1. **PNC age is strongly predictable from connectivity** — SC r²≈0.50–0.52, FC
+   r²≈0.32–0.37, across all three models. Confirms the pipeline is correctly wired
+   (labels/features/folds). Atypically, **SC→age > FC→age** here (≈0.51 vs ≈0.33),
+   the reverse of the usual FC-leads-for-age literature ordering.
+2. **PNC VWM is only weakly predictable from connectivity** (SC/FC r²≈0.10–0.12)…
+   **but best predicted by the GLM-activation vector** — `glm-vwm` r²≈0.23–0.25
+   (PNC), ~2× the connectivity ceiling, on a 400-dim input vs 79,800-dim. Directly
+   answers spec Q2: the GLM contrast carries the VWM signal, the graph does not add
+   much.
+3. **The three estimators are interchangeable** on the signal-bearing cells
+   (PNC age, PNC GLM→VWM all agree within fold noise) — the p≫n regime does **not**
+   favor XGBoost over ElasticNet, as anticipated. MLP edges the others on `pnc-sc-age`.
+4. **ORBIT (N≈95–130) is near-zero/negative almost everywhere** — high variance,
+   underpowered; the lone positive is **GLM→VWM** (xgb pooled 0.143, mlp 0.116),
+   echoing PNC's GLM>connectivity-for-VWM pattern at small N. Pooled > mean-of-folds
+   on ORBIT (fold-local means are noisy at n≈25/fold), so read pooled there.
+5. **vs the GNN:** classical GLM→VWM PNC (≈0.23–0.25 pooled) **matches or exceeds**
+   the GNN's best GLM-node-feature VWM result (≈0.18–0.21, glm_diagonal through GCN,
+   batches 2026-05-29 / 06-04) — a non-graph model on the GLM vector is not beaten
+   by the GNN. See the report for the corrected resampled t-tests.
+
 ## Batch 2026-06-09 — VWM-HL GLM node-features × backbone generalization on ORBIT (GCN/GAT/GIN/Transformer)
 
 **What.** Reproduces the [2026-06-04 PNC backbone-generalization

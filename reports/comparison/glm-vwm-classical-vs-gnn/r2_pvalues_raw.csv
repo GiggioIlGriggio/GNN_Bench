@@ -1,0 +1,6 @@
+model,enet-glmscalar,gnn-glmdiag,gnn-id-glmdiag,mlp-glmscalar,xgb-glmscalar
+enet-glmscalar,,0.324756,0.568446,0.557507,0.2422
+gnn-glmdiag,0.324756,,0.731948,0.537674,0.573848
+gnn-id-glmdiag,0.568446,0.731948,,0.837964,0.902968
+mlp-glmscalar,0.557507,0.537674,0.837964,,0.917595
+xgb-glmscalar,0.2422,0.573848,0.902968,0.917595,

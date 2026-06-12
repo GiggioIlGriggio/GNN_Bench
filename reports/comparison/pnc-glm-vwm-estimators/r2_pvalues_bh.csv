@@ -1,0 +1,4 @@
+model,enet-pnc-glm-vwm,mlp-pnc-glm-vwm,xgb-pnc-glm-vwm
+enet-pnc-glm-vwm,,0.836261,0.726599
+mlp-pnc-glm-vwm,0.836261,,0.917595
+xgb-pnc-glm-vwm,0.726599,0.917595,
