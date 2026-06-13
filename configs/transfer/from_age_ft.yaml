@@ -1,0 +1,5 @@
+# B1/B3: full fine-tune from an age-pretrained backbone.
+enabled: true
+source_checkpoint_root: ???   # set on CLI: transfer.source_checkpoint_root=checkpoints/<source-run-name>
+checkpoint_variant: best
+frozen_layers: []
