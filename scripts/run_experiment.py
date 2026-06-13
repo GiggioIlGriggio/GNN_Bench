@@ -330,6 +330,12 @@ def main(cfg: DictConfig) -> None:
     #     model summary, and select_runner — they have no torch module.
     # ------------------------------------------------------------------
     if model_cfg.kind == "sklearn":
+        if transfer_cfg.enabled:
+            raise ValueError(
+                "transfer.enabled=true is not supported for classical-ML (sklearn) "
+                "models — transfer requires the nested GNN runner. Use a GNN model "
+                "or set transfer=none."
+            )
         from src.training.run_identity import build_run_name
 
         log.info("Classical-ML runner — estimator=%s input=%s",
@@ -380,6 +386,14 @@ def main(cfg: DictConfig) -> None:
         runner=cfg.get("runner"),
     )
     log.info("Runner selected: %s", runner)
+
+    if transfer_cfg.enabled and runner != "nested":
+        raise ValueError(
+            f"transfer.enabled=true requires the nested runner (runner=nested), but "
+            f"the resolved runner is {runner!r}. The age-pretrained backbone is only "
+            "injected in the nested-CV route — any other runner would silently train "
+            "from scratch. Set runner=nested or transfer=none."
+        )
 
     if runner == "sweep":
         from src.sweeps.hydra_sweep import HydraSweep
