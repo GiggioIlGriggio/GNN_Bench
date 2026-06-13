@@ -14,17 +14,18 @@ the *current target*. So an unrestricted age run loads a much larger cohort than
 the VWM run, and the two fold partitions can never coincide. (Every VWM subject
 does have an age, so the VWM cohort is the binding constraint.)
 
-This script writes the *loadable* VWM cohort — subjects that have BOTH a
-connectivity graph on disk AND a non-NaN VWM score — to a ``.txt`` allowlist,
-one ``sub-XXXXXXXXXX`` id per line. Pass it as
-``dataset.subject_list_file=<path>`` to EVERY PNC run in this experiment
-(source age, A3 from-scratch, B transfer, C concatenation) so all arms share one
-cohort and one fold partition.
+This script writes the *loadable* VWM cohort to a ``.txt`` allowlist, one
+``sub-XXXXXXXXXX`` id per line. Pass it as ``dataset.subject_list_file=<path>``
+to EVERY PNC run in this experiment (source age, A3 from-scratch, B transfer, C
+concatenation) so all arms share one cohort and one fold partition.
 
-Carrier note: the cohort is computed with ``features=identity`` (no GLM maps
-required). If a GLM-carrier arm (B3/B4) needs subjects to also have GLM maps,
-regenerate with ``features=glm_diagonal`` and use that (smaller) allowlist for
-those arms.
+Binding cohort: the default carrier is ``glm_diagonal``, which requires each
+subject to have a graph, a non-NaN VWM score, AND the GLM map — the *binding*
+constraint (940 subjects vs 973 for graph∩VWM alone). Using this single cohort
+for every arm keeps the whole matrix on the identical subject set, so all
+cross-arm comparisons are same-subject. Identity-carrier arms (B1/B2) run on it
+fine since every subject also has a graph. (Pass ``features=identity`` only if you
+deliberately want the larger graph∩VWM set for an ID-only experiment.)
 
 Usage
 -----
@@ -32,7 +33,7 @@ Usage
         [OUT_PATH] [LABELS] [FEATURES]
 
 Defaults: OUT_PATH=configs/subject_lists/pnc_vwm_cohort.txt
-          LABELS=pnc_VWMdprime  FEATURES=identity
+          LABELS=pnc_VWMdprime  FEATURES=glm_diagonal
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ def main() -> None:
         REPO_ROOT / "configs" / "subject_lists" / "pnc_vwm_cohort.txt"
     )
     labels = sys.argv[2] if len(sys.argv) > 2 else "pnc_VWMdprime"
-    features = sys.argv[3] if len(sys.argv) > 3 else "identity"
+    features = sys.argv[3] if len(sys.argv) > 3 else "glm_diagonal"
 
     from src.configs.dataset_config import DatasetConfig
     from src.configs.feature_config import FeatureConfig

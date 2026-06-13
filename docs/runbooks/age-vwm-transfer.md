@@ -29,37 +29,43 @@ On PNC this is **not** automatic. In `T0/Tabular_data/PNC_ALL_SCORES.csv`:
 
 The dataset NaN-filters on the **current target**, so an unrestricted age run
 loads ~thousands of age-only subjects that the VWM run never sees → the two fold
-partitions can never coincide. The fix: restrict **all** PNC arms to the
-**loadable VWM cohort** — subjects with both a connectivity graph *and* a
-non-NaN VWM score — via a subject allowlist.
+partitions can never coincide. The fix: restrict **all** PNC arms to a single
+shared cohort via a subject allowlist.
 
-This is also the scientifically correct choice: a controlled transfer-vs-scratch
-comparison must hold the cohort fixed (the age advantage must come from the
-*label*, not from extra subjects).
+**The cohort = the binding constraint (940 subjects).** The GLM carrier (B3/B4)
+additionally requires each subject to have the `contrast-2back_vs_0back` GLM map,
+which 33 of the graph∩VWM subjects lack:
+
+| set | count |
+|-----|-------|
+| graph ∩ non-NaN VWM (identity-loadable) | 973 |
+| graph ∩ non-NaN VWM ∩ GLM map (**use this for all arms**) | **940** |
+
+We use the **940** GLM cohort for **every** arm (it's a clean subset of the 973 —
+identity arms run on it fine since all 940 have graphs). This keeps every arm on
+the *identical* subject set, so cross-carrier comparisons (B1/B2 vs B3/B4) and
+the A3/C controls are all same-subject. It is also the scientifically correct
+choice: a controlled transfer-vs-scratch comparison must hold the cohort fixed —
+the age advantage must come from the *label*, not from a different subject set.
 
 ### Generate the cohort allowlist (once)
 
 ```bash
 PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py
-# writes configs/subject_lists/pnc_vwm_cohort.txt  (973 subjects, identity carrier)
+# writes configs/subject_lists/pnc_vwm_cohort.txt  (940 subjects, GLM binding cohort)
 ```
 
 Then pass `dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt` to
-**every** command below (source age runs, B1–B4, and — for a fair comparison —
-the A3 from-scratch and C-arm runs too). The allowlist is **generated locally and
-not committed** — `configs/subject_lists/*.txt` is git-ignored, because it lists
-PNC (restricted-access) subject IDs. Regenerate it with the command above on each
-machine (and whenever the PNC derivatives change).
+**every** command below — both source age runs, B1–B4, and (for a same-subject
+comparison) the A3 from-scratch, A4, and C-arm runs too. The allowlist is
+**generated locally and not committed** — `configs/subject_lists/*.txt` is
+git-ignored, because it lists PNC (restricted-access) subject IDs. Regenerate it
+on each machine (and whenever the PNC derivatives change).
 
-**GLM-carrier caveat (B3/B4):** the committed cohort is computed with
-`features=identity` (973 subjects, needs only an SC graph). The GLM carrier also
-needs per-subject GLM maps; if any cohort subject lacks them, regenerate a
-GLM-specific allowlist and use it for the GLM source + B3/B4:
-
-```bash
-PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py \
-    configs/subject_lists/pnc_vwm_cohort_glm.txt pnc_VWMdprime glm_diagonal
-```
+(The generator defaults to `features=glm_diagonal` = the 940 binding cohort. If
+you ever want the larger graph∩VWM set for an ID-only experiment, pass
+`… pnc_vwm_cohort_id.txt pnc_VWMdprime identity` → 973 subjects — but the B-arm
+matrix here uses the single 940 cohort throughout.)
 
 ---
 
@@ -111,11 +117,7 @@ PYTHONPATH=$(pwd) .venv/bin/python scripts/run_experiment.py \
 
 ### GLM-carrier source (for B3/B4)
 
-⚠️ If the GLM carrier needs subjects to also have GLM maps (see the §0
-GLM-carrier caveat), first generate `pnc_vwm_cohort_glm.txt` and use it **here and
-for B3/B4** in place of `pnc_vwm_cohort.txt` — the GLM source and its B-arms must
-share one cohort just as the ID side does. If every cohort subject has GLM maps,
-the identity cohort below is fine.
+Same single cohort (`pnc_vwm_cohort.txt` = the 940 GLM cohort) as every other arm.
 
 ```bash
 PYTHONPATH=$(pwd) .venv/bin/python scripts/run_experiment.py \
@@ -249,8 +251,8 @@ PYTHONPATH=$(pwd) .venv/bin/python scripts/run_experiment.py \
   logging.project=age_vwm_transfer
 ```
 
-(Use `trainer.search_space=…`, not `sweeper=…` — see §1. If you generated a
-GLM-specific cohort for B3/B4, use that same allowlist here.)
+(Use `trainer.search_space=…`, not `sweeper=…` — see §1. Same single 940 cohort
+as every other arm.)
 
 ### A5 — age → VWM, no graph (trivial developmental floor)
 
@@ -260,9 +262,8 @@ both}`) — there is **no scalar-covariate (age-only) input mode**, so A5 is **n
 a classical-harness run. It is the closed-form floor `r² = corr(age, VWM)²`
 computed on the fixed VWM cohort, recorded directly in `EXPERIMENTS.md`.
 
-Observed on the 973-subject cohort: **corr(age, VWM_overall_dprime) = 0.229 →
-A5 r² = 0.052** (a 5-fold out-of-sample age→VWM linear fit gives r² = 0.050,
-confirming the floor). Any B/C arm must beat ~0.05 to demonstrate the graph adds
+Observed on the 940-subject cohort: **corr(age, VWM_overall_dprime) = 0.239 →
+A5 r² = 0.057**. Any B/C arm must beat ~0.06 to demonstrate the graph adds
 anything over age alone.
 
 Reproduce:
