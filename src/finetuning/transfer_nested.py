@@ -25,6 +25,11 @@ class SourceBackboneProvider:
     """
 
     def __init__(self, source_root, variant: str = "best") -> None:
+        # Validate the checkpoint variant first: the CheckpointManager only ever
+        # writes model_best.pt / model_last.pt, so fail at construction rather
+        # than deep in a run with a cryptic FileNotFoundError for model_*.pt.
+        if variant not in ("best", "last"):
+            raise ValueError(f"variant must be 'best' or 'last', got {variant!r}")
         self.source_root = Path(source_root)
         self.variant = variant
         manifest_path = self.source_root / "fold_indices.json"
@@ -34,6 +39,11 @@ class SourceBackboneProvider:
                 "regenerate the source run with the manifest-writing nested CV."
             )
         manifest = json.loads(manifest_path.read_text())
+        if not manifest.get("folds"):
+            raise ValueError(
+                f"Source manifest at {manifest_path} has no 'folds' entries; the "
+                "source run did not complete or wrote a malformed manifest."
+            )
         self._folds: Dict[Tuple[int, int], Dict[str, List[int]]] = {
             (rec["rep"], rec["fold"]): {
                 "train_val_idx": sorted(rec["train_val_idx"]),
@@ -65,4 +75,10 @@ class SourceBackboneProvider:
     def state_dict_for(self, *, rep: int, fold: int) -> dict:
         """Load the source backbone weights for one outer fold."""
         path = self.source_root / f"rep_{rep}" / f"fold_{fold}" / f"model_{self.variant}.pt"
+        if not path.exists():
+            raise FileNotFoundError(
+                f"No source checkpoint for (rep={rep}, fold={fold}) at {path} "
+                f"(variant={self.variant!r}); the source run may be incomplete."
+            )
+        # weights_only=True assumes source checkpoints are pure tensor state-dicts.
         return torch.load(path, map_location="cpu", weights_only=True)
