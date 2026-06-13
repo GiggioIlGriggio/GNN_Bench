@@ -1,0 +1,15 @@
+# @package hydra.sweeper
+# Source age pretraining: pin the backbone architecture so EVERY fold's refit
+# checkpoint shares one shape (transfer requires identical backbone dims).
+# Only optimiser + head vary during the source run's own HPO.
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 20
+params:
+  trainer.lr: choice(0.0001, 0.0005, 0.001, 0.005)
+  trainer.weight_decay: choice(0.0, 0.0001, 0.001, 0.01)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(2)

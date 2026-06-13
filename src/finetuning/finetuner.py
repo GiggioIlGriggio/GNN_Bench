@@ -20,6 +20,8 @@ from src.datasets.label_builder import LabelBuilder
 from src.interfaces.adapters import load_partial_state_dict
 from src.models.base_model import BrainGNN
 from src.models.registry import get_model
+from src.training.transfer_ops import freeze_layers as _freeze_layers_impl
+from src.training.transfer_ops import reinit_head as _reinit_head_impl
 
 log = logging.getLogger(__name__)
 
@@ -561,21 +563,9 @@ class Finetuner:
 
 def _reinit_head(model: BrainGNN) -> None:
     """Reinitialise the prediction head of a BrainGNN model."""
-    if hasattr(model, "head"):
-        for m in model.head.modules():
-            if isinstance(m, torch.nn.Linear):
-                torch.nn.init.kaiming_uniform_(m.weight)
-                if m.bias is not None:
-                    torch.nn.init.zeros_(m.bias)
-        log.info("Reinitialised prediction head")
+    _reinit_head_impl(model)
 
 
 def _freeze_layers(model: BrainGNN, frozen_prefixes: List[str]) -> None:
     """Freeze parameters whose names start with any of the given prefixes."""
-    frozen_count = 0
-    for name, param in model.named_parameters():
-        if any(name.startswith(prefix) for prefix in frozen_prefixes):
-            param.requires_grad = False
-            frozen_count += 1
-    if frozen_count:
-        log.info("Froze %d parameters matching prefixes: %s", frozen_count, frozen_prefixes)
+    _freeze_layers_impl(model, frozen_prefixes)

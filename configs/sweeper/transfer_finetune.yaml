@@ -1,0 +1,14 @@
+# @package hydra.sweeper
+# Restricted HPO for transfer arms: backbone shape is frozen by the loaded
+# source weights, so ONLY optimiser + the reinit'd head are tuned.
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 20
+params:
+  trainer.lr: choice(0.0001, 0.0005, 0.001, 0.005)
+  trainer.weight_decay: choice(0.0, 0.0001, 0.001, 0.01)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(2)

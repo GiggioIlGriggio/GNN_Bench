@@ -16,6 +16,7 @@ defaults:
   - trainer: default
   - sweeper: null
   - finetuning: default
+  - transfer: none
   - logging: wandb
   - explainer: default
   - override hydra/sweeper: optuna
@@ -31,3 +32,8 @@ objective_metric: r2
 # Training runner to dispatch. Override on the CLI with runner=flat_cv to use
 # the legacy flat CrossValidator (no inner HPO). Default: nested (nested CV).
 runner: nested
+
+# Bin outer CV folds on a metadata column other than the regression target
+# (e.g. an age-source run stratified on VWM so its folds match VWM runs).
+# null = stratify on the target (default behaviour).
+stratify_target: null

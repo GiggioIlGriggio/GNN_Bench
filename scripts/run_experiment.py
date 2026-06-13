@@ -131,6 +131,7 @@ def main(cfg: DictConfig) -> None:
     from src.configs.logging_config import LoggingConfig
     from src.configs.model_config import ModelConfig
     from src.configs.trainer_config import TrainerConfig
+    from src.configs.transfer_config import TransferConfig
 
     dataset_cfg = DatasetConfig(**OmegaConf.to_container(cfg.dataset, resolve=True))
     feature_cfg = FeatureConfig(**OmegaConf.to_container(cfg.features, resolve=True))
@@ -140,6 +141,8 @@ def main(cfg: DictConfig) -> None:
     logging_cfg = LoggingConfig(**OmegaConf.to_container(cfg.logging, resolve=True))
     ft_cfg = FinetuningConfig(**OmegaConf.to_container(cfg.finetuning, resolve=True))
     explainer_cfg = ExplainerConfig(**OmegaConf.to_container(cfg.explainer, resolve=True))
+    transfer_cfg = TransferConfig(**OmegaConf.to_container(cfg.transfer, resolve=True))
+    transfer_cfg.validate_runtime()
 
     # Detect sweep mode: Hydra sets mode to MULTIRUN when --multirun is used.
     from hydra.core.hydra_config import HydraConfig
@@ -256,6 +259,13 @@ def main(cfg: DictConfig) -> None:
     labels: np.ndarray = dataset.get_labels()
     log.info("Dataset ready — %d subjects loaded", len(graphs))
 
+    stratify_labels = None
+    stratify_target = cfg.get("stratify_target")
+    if stratify_target:
+        stratify_labels = dataset.get_label_column(stratify_target)
+        log.info("Stratifying folds on '%s' (target remains '%s')",
+                 stratify_target, label_cfg.target)
+
     # When composite labels are configured, prepare the stateful
     # label_builder / label_components pair so that CrossValidator
     # can build per-fold labels without data leakage.
@@ -320,6 +330,12 @@ def main(cfg: DictConfig) -> None:
     #     model summary, and select_runner — they have no torch module.
     # ------------------------------------------------------------------
     if model_cfg.kind == "sklearn":
+        if transfer_cfg.enabled:
+            raise ValueError(
+                "transfer.enabled=true is not supported for classical-ML (sklearn) "
+                "models — transfer requires the nested GNN runner. Use a GNN model "
+                "or set transfer=none."
+            )
         from src.training.run_identity import build_run_name
 
         log.info("Classical-ML runner — estimator=%s input=%s",
@@ -370,6 +386,14 @@ def main(cfg: DictConfig) -> None:
         runner=cfg.get("runner"),
     )
     log.info("Runner selected: %s", runner)
+
+    if transfer_cfg.enabled and runner != "nested":
+        raise ValueError(
+            f"transfer.enabled=true requires the nested runner (runner=nested), but "
+            f"the resolved runner is {runner!r}. The age-pretrained backbone is only "
+            "injected in the nested-CV route — any other runner would silently train "
+            "from scratch. Set runner=nested or transfer=none."
+        )
 
     if runner == "sweep":
         from src.sweeps.hydra_sweep import HydraSweep
@@ -547,8 +571,19 @@ def main(cfg: DictConfig) -> None:
                 num_nodes=graphs[0].num_nodes if graphs else 0,
             )
 
+        source_provider = None
+        if transfer_cfg.enabled:
+            from src.finetuning.transfer_nested import SourceBackboneProvider
+            source_provider = SourceBackboneProvider(
+                transfer_cfg.source_checkpoint_root,
+                variant=transfer_cfg.checkpoint_variant,
+            )
+            log.info("Transfer enabled — source=%s frozen=%s",
+                     transfer_cfg.source_checkpoint_root, transfer_cfg.frozen_layers)
+
         ncv = NestedCrossValidator(
             cfg=trainer_cfg, search_space_path=trainer_cfg.search_space,
+            source_provider=source_provider, frozen_layers=transfer_cfg.frozen_layers,
         )
         log.info(
             "Starting nested CV — reps=%d  outer_folds=%d  inner_trials=%d  hpo_metric=%s",
@@ -561,6 +596,7 @@ def main(cfg: DictConfig) -> None:
             model_factory=nested_model_factory,
             dataset=graphs,
             labels=labels,
+            stratify_labels=stratify_labels,
             base_model_cfg=model_cfg,
             logger=logger,
             run_name=build_run_name(cfg.experiment_name),

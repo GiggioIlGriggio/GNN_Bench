@@ -53,3 +53,6 @@ dist/
 cluster_outputs/
 slurm/logs/*
 !slurm/logs/.gitkeep
+
+# --- subject allowlists (PNC restricted-access subject IDs; generated locally) ---
+configs/subject_lists/*.txt

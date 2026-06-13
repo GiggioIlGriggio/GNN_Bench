@@ -6,6 +6,7 @@ from src.configs.label_config import LabelConfig
 from src.configs.model_config import ModelConfig
 from src.configs.trainer_config import TrainerConfig
 from src.configs.finetuning_config import FinetuningConfig
+from src.configs.transfer_config import TransferConfig
 from src.configs.logging_config import LoggingConfig
 
 __all__ = [
@@ -15,5 +16,6 @@ __all__ = [
     "ModelConfig",
     "TrainerConfig",
     "FinetuningConfig",
+    "TransferConfig",
     "LoggingConfig",
 ]

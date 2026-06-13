@@ -43,6 +43,7 @@ from torch_geometric.loader import DataLoader
 from src.configs.model_config import ModelConfig
 from src.configs.trainer_config import TrainerConfig
 from src.datasets.label_builder import LabelBuilder
+from src.finetuning.transfer_nested import SourceBackboneProvider
 from src.training.fold_checkpoint import CheckpointManager
 from src.training.fold_barrier import FoldBarrier
 from src.training.metrics import MetricDict, compute_metrics
@@ -192,12 +193,16 @@ class NestedCrossValidator:
         self,
         cfg: TrainerConfig,
         search_space_path: Optional[str | Path] = None,
+        source_provider: Optional["SourceBackboneProvider"] = None,
+        frozen_layers: Optional[List[str]] = None,
     ) -> None:
         self.cfg = cfg
         self.search_space_path = (
             Path(search_space_path) if search_space_path is not None else None
         )
         self._search_specs: Optional[List[SearchSpec]] = None
+        self.source_provider = source_provider
+        self.frozen_layers = frozen_layers or []
 
     # ------------------------------------------------------------------
     # Public API
@@ -209,6 +214,7 @@ class NestedCrossValidator:
         model_factory: Callable[[ModelConfig], "BrainGNN"],
         dataset: List[torch_geometric.data.Data],
         labels: np.ndarray,
+        stratify_labels: Optional[np.ndarray] = None,
         base_model_cfg: ModelConfig,
         logger: "WandbLogger",
         run_name: str = "nested_cv",
@@ -230,6 +236,11 @@ class NestedCrossValidator:
         labels : np.ndarray
             Per-subject scalar labels (used for stratification binning and
             as default fold labels when ``label_builder`` is None).
+        stratify_labels : np.ndarray, optional
+            When provided, the outer folds are stratified/binned on this vector
+            instead of ``labels`` (e.g. an age-source run stratified on VWM so
+            its outer folds match every VWM run byte-for-byte). Must be the same
+            length as ``labels``.
         base_model_cfg : ModelConfig
             Baseline model config; per-trial HP overrides are applied via
             ``model_copy(update=...)``.
@@ -289,12 +300,43 @@ class NestedCrossValidator:
         fold_results: List[FoldResult] = []
 
         # Bin labels once — same bins across all reps (deterministic given the
-        # label vector).
-        bins = self._stratify_bins(labels)
+        # label vector). Bin on stratify_labels when provided (e.g. age-source
+        # runs stratified on VWM so their outer folds match every VWM run
+        # byte-for-byte), else on the target.
+        if stratify_labels is not None and len(stratify_labels) != len(labels):
+            raise ValueError(
+                f"stratify_labels length {len(stratify_labels)} != "
+                f"labels length {len(labels)}"
+            )
+        strat = stratify_labels if stratify_labels is not None else labels
+        bins = self._stratify_bins(strat)
 
         all_folds = _shared_outer_folds(
             n=len(dataset), bins=bins, seeds=outer_seeds, n_outer=n_outer,
         )
+
+        # Persist a fold-index manifest so a later transfer run can ASSERT its
+        # outer folds align byte-for-byte with this (source) run's folds.
+        manifest = {
+            "n": len(dataset),
+            "n_outer": n_outer,
+            "n_repetitions": self.cfg.n_repetitions,
+            "outer_seeds": [int(s) for s in outer_seeds],
+            "folds": [
+                {
+                    "rep": fi // n_outer,
+                    "fold": fi % n_outer,
+                    "train_val_idx": sorted(map(int, tv)),
+                    "test_idx": sorted(map(int, te)),
+                }
+                for fi, (tv, te) in enumerate(all_folds)
+            ],
+        }
+        ckpt_root.mkdir(parents=True, exist_ok=True)
+        with open(ckpt_root / "fold_indices.json", "w") as f:
+            json.dump(manifest, f)
+        log.info("Wrote fold-index manifest: %s", ckpt_root / "fold_indices.json")
+
         for flat_idx, (train_val_idx, test_idx) in enumerate(all_folds):
             rep = flat_idx // n_outer
             fold_idx = flat_idx % n_outer
@@ -352,6 +394,46 @@ class NestedCrossValidator:
     # Outer-fold orchestration
     # ------------------------------------------------------------------
 
+    def _wrap_factory_for_fold(
+        self, model_factory, *, rep: int, fold: int, train_val_idx, test_idx,
+    ):
+        """Return a factory that loads the source backbone for (rep,fold).
+
+        No-op (returns ``model_factory``) when no source provider is set.
+        """
+        if self.source_provider is None:
+            return model_factory
+
+        from src.interfaces.adapters import load_partial_state_dict
+        from src.training.transfer_ops import freeze_layers, reinit_head
+
+        provider = self.source_provider
+        frozen = self.frozen_layers
+
+        def transfer_factory(trial_model_cfg):
+            provider.assert_aligned(
+                rep=rep, fold=fold, train_val_idx=train_val_idx, test_idx=test_idx,
+            )
+            model = model_factory(trial_model_cfg)
+            state_dict = provider.state_dict_for(rep=rep, fold=fold)
+            loaded, _skipped = load_partial_state_dict(model, state_dict)
+            # Guard assumes the model exposes a "backbone." submodule (the
+            # unimodal GNN backbone). Models without one skip this check.
+            backbone_keys = [k for k in model.state_dict() if k.startswith("backbone")]
+            missing = [k for k in backbone_keys if k not in loaded]
+            if backbone_keys and missing:
+                raise RuntimeError(
+                    f"Source backbone did not fully load at (rep={rep}, fold={fold}): "
+                    f"{len(missing)}/{len(backbone_keys)} backbone keys unmatched "
+                    f"(e.g. {missing[:3]}). The VWM model's backbone shape must equal "
+                    "the source run's — pin the source architecture (spec §10)."
+                )
+            reinit_head(model)
+            freeze_layers(model, frozen)
+            return model
+
+        return transfer_factory
+
     def _run_outer_fold(
         self,
         *,
@@ -377,6 +459,10 @@ class NestedCrossValidator:
         inner_seed = outer_seed * 1000 + fold
         train_idx, val_idx = self._inner_split(
             train_val_idx, bins, inner_seed,
+        )
+        fold_factory = self._wrap_factory_for_fold(
+            model_factory, rep=rep, fold=fold,
+            train_val_idx=train_val_idx, test_idx=test_idx,
         )
         log.info(
             "rep=%d fold=%d — inner train=%d val=%d  outer test=%d",
@@ -408,7 +494,7 @@ class NestedCrossValidator:
             best_hparams, best_trial_idx, best_epoch, trials_rows = self._run_inner_hpo(
                 rep=rep, fold=fold, inner_seed=inner_seed,
                 base_model_cfg=base_model_cfg,
-                model_factory=model_factory,
+                model_factory=fold_factory,
                 inner_loaders=inner_loaders,
                 inner_barrier=inner_barrier,
                 logger=logger,
@@ -424,7 +510,7 @@ class NestedCrossValidator:
                 rep=rep, fold=fold, trial=0,
                 trial_model_cfg=base_model_cfg,
                 trial_trainer_cfg=self._trainer_cfg_for_inner(),
-                model_factory=model_factory,
+                model_factory=fold_factory,
                 inner_loaders=inner_loaders,
                 inner_barrier=inner_barrier,
                 logger=logger,
@@ -456,7 +542,7 @@ class NestedCrossValidator:
             model = self._refit_on_trainval(
                 trial_model_cfg=trial_model_cfg,
                 trial_trainer_cfg=trial_trainer_cfg,
-                model_factory=model_factory,
+                model_factory=fold_factory,
                 train_loader=outer_loaders["train"],
                 refit_epochs=refit_epochs,
                 device=device,
@@ -471,7 +557,7 @@ class NestedCrossValidator:
             model = self._refit_on_trainval(
                 trial_model_cfg=trial_model_cfg,
                 trial_trainer_cfg=trial_trainer_cfg,
-                model_factory=model_factory,
+                model_factory=fold_factory,
                 train_loader=outer_loaders["train"],
                 refit_epochs=refit_epochs,
                 device=device,
