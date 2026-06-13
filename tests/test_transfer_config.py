@@ -16,3 +16,9 @@ def test_frozen_arm_roundtrip():
                        frozen_layers=["backbone"])
     c.validate_runtime()
     assert c.frozen_layers == ["backbone"]
+
+
+def test_invalid_checkpoint_variant_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        TransferConfig(checkpoint_variant="middle")
