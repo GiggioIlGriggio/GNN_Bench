@@ -50,17 +50,34 @@ the age advantage must come from the *label*, not from a different subject set.
 
 ### Generate the cohort allowlist (once)
 
+**Locally:**
+
 ```bash
 PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py
 # writes configs/subject_lists/pnc_vwm_cohort.txt  (940 subjects, GLM binding cohort)
 ```
 
+**On the cluster (do this before any cluster run — the cohort must list exactly
+the subjects loadable on the *cluster* filesystem, so it can't be copied from the
+laptop):**
+
+```bash
+cluster-submit --node <cpunode> slurm/make_cohort.sh -J make-pnc-vwm-cohort
+# slurm/make_cohort.sh runs the generator in the container with
+# dataset.root=/data/bdip_ssd/al5165/GNNBenchV2/data/PNC (the laptop path baked
+# into configs/dataset/pnc.yaml does not exist there). It writes
+# configs/subject_lists/pnc_vwm_cohort.txt into the cluster checkout; the job log
+# prints the subject count. cluster-submit never `git clean`s, so the git-ignored
+# allowlist persists across every later source/B-arm/A4 submit.
+```
+
 Then pass `dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt` to
 **every** command below — both source age runs, B1–B4, and (for a same-subject
 comparison) the A3 from-scratch, A4, and C-arm runs too. The allowlist is
-**generated locally and not committed** — `configs/subject_lists/*.txt` is
-git-ignored, because it lists PNC (restricted-access) subject IDs. Regenerate it
-on each machine (and whenever the PNC derivatives change).
+**generated, not committed** — `configs/subject_lists/*.txt` is git-ignored,
+because it lists PNC (restricted-access) subject IDs. Regenerate it on each
+machine (and whenever the PNC derivatives change); the cluster count may differ
+from the local 940 if the cluster's PNC derivatives are a different subset.
 
 (The generator defaults to `features=glm_diagonal` = the 940 binding cohort. If
 you ever want the larger graph∩VWM set for an ID-only experiment, pass
