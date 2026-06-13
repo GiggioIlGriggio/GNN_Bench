@@ -1,24 +1,30 @@
+# An exact-set (allowlist) assertion over the restricted sweeper configs guards
+# against (a) any backbone-arch param leaking into a transfer/source HPO sweep --
+# including ModelConfig fields not yet added, which a denylist could never catch --
+# and (b) the two configs silently diverging from each other.
 from pathlib import Path
+
+import pytest
 
 from src.training.search_space import load_sweeper_params, parse_search_space
 
-_FORBIDDEN = {"model.embedding_dim", "model.hidden_dim", "model.num_layers",
-              "model.pooling", "model.jk_mode"}
+_EXPECTED = {
+    "trainer.lr",
+    "trainer.weight_decay",
+    "model.dropout",
+    "model.head_hidden_dim",
+    "model.head_num_layers",
+}
 
 
-def test_transfer_sweeper_has_no_backbone_arch_params():
-    params = load_sweeper_params(Path("configs/sweeper/transfer_finetune.yaml"))
+@pytest.mark.parametrize(
+    "sweeper",
+    ["transfer_finetune.yaml", "source_age_pinned.yaml"],
+)
+def test_restricted_sweeper_tunes_exactly_allowed_params(sweeper):
+    params = load_sweeper_params(Path("configs/sweeper") / sweeper)
     specs = parse_search_space(params)
     names = {s.name for s in specs}
-    assert not (names & _FORBIDDEN), f"backbone-arch params leak into transfer HPO: {names & _FORBIDDEN}"
-    # must still tune optimiser + head
-    assert "trainer.lr" in names
-
-
-def test_source_age_pinned_sweeper_has_no_backbone_arch_params():
-    params = load_sweeper_params(Path("configs/sweeper/source_age_pinned.yaml"))
-    specs = parse_search_space(params)
-    names = {s.name for s in specs}
-    assert not (names & _FORBIDDEN), f"backbone-arch params leak into pinned-source HPO: {names & _FORBIDDEN}"
-    # must still tune optimiser + head
-    assert "trainer.lr" in names
+    assert names == _EXPECTED, (
+        f"unexpected: {names - _EXPECTED}, missing: {_EXPECTED - names}"
+    )
