@@ -30,10 +30,20 @@ deliberately want the larger graph∩VWM set for an ID-only experiment.)
 Usage
 -----
     PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py \
-        [OUT_PATH] [LABELS] [FEATURES]
+        [OUT_PATH] [LABELS] [FEATURES] [extra.hydra=override ...]
 
 Defaults: OUT_PATH=configs/subject_lists/pnc_vwm_cohort.txt
           LABELS=pnc_VWMdprime  FEATURES=glm_diagonal
+
+Any arg containing ``=`` is forwarded verbatim as an extra Hydra override. This
+is how the cluster wrapper (``slurm/make_cohort.sh``) redirects the dataset root:
+``configs/dataset/pnc.yaml`` bakes in the laptop path, which does not exist on the
+cluster, so the wrapper passes ``dataset.root=/data/.../PNC`` to point at the
+cluster derivatives. Example::
+
+    ... scripts/make_pnc_vwm_cohort.py \
+        configs/subject_lists/pnc_vwm_cohort.txt pnc_VWMdprime glm_diagonal \
+        dataset.root=/data/bdip_ssd/al5165/GNNBenchV2/data/PNC
 """
 
 from __future__ import annotations
@@ -49,12 +59,28 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SUB_RE = re.compile(r"(sub-\d+)")
 
 
-def main() -> None:
-    out_path = Path(sys.argv[1]) if len(sys.argv) > 1 else (
+def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str]]:
+    """Split CLI args into positional (out_path, labels, features) + extra overrides.
+
+    Positional args are ``[OUT_PATH] [LABELS] [FEATURES]``. Any arg containing
+    ``=`` is treated as an extra Hydra override (e.g. ``dataset.root=/cluster/PNC``)
+    and forwarded verbatim to ``compose`` — this lets the cluster wrapper redirect
+    the dataset root, since the laptop path baked into ``configs/dataset/pnc.yaml``
+    does not exist on the cluster filesystem. Order-independent: overrides and
+    positionals may be interleaved.
+    """
+    extra_overrides = [a for a in argv if "=" in a]
+    positional = [a for a in argv if "=" not in a]
+    out_path = Path(positional[0]) if len(positional) > 0 else (
         REPO_ROOT / "configs" / "subject_lists" / "pnc_vwm_cohort.txt"
     )
-    labels = sys.argv[2] if len(sys.argv) > 2 else "pnc_VWMdprime"
-    features = sys.argv[3] if len(sys.argv) > 3 else "glm_diagonal"
+    labels = positional[1] if len(positional) > 1 else "pnc_VWMdprime"
+    features = positional[2] if len(positional) > 2 else "glm_diagonal"
+    return out_path, labels, features, extra_overrides
+
+
+def main() -> None:
+    out_path, labels, features, extra_overrides = parse_args(sys.argv[1:])
 
     from src.configs.dataset_config import DatasetConfig
     from src.configs.feature_config import FeatureConfig
@@ -65,7 +91,12 @@ def main() -> None:
     with initialize_config_dir(version_base=None, config_dir=config_dir):
         cfg = compose(
             config_name="experiment",
-            overrides=[f"dataset=pnc", f"labels={labels}", f"features={features}"],
+            overrides=[
+                f"dataset=pnc",
+                f"labels={labels}",
+                f"features={features}",
+                *extra_overrides,
+            ],
         )
 
     dataset_cfg = DatasetConfig(**OmegaConf.to_container(cfg.dataset, resolve=True))
