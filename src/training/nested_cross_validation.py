@@ -209,6 +209,7 @@ class NestedCrossValidator:
         model_factory: Callable[[ModelConfig], "BrainGNN"],
         dataset: List[torch_geometric.data.Data],
         labels: np.ndarray,
+        stratify_labels: Optional[np.ndarray] = None,
         base_model_cfg: ModelConfig,
         logger: "WandbLogger",
         run_name: str = "nested_cv",
@@ -230,6 +231,11 @@ class NestedCrossValidator:
         labels : np.ndarray
             Per-subject scalar labels (used for stratification binning and
             as default fold labels when ``label_builder`` is None).
+        stratify_labels : np.ndarray, optional
+            When provided, the outer folds are stratified/binned on this vector
+            instead of ``labels`` (e.g. an age-source run stratified on VWM so
+            its outer folds match every VWM run byte-for-byte). Must be the same
+            length as ``labels``.
         base_model_cfg : ModelConfig
             Baseline model config; per-trial HP overrides are applied via
             ``model_copy(update=...)``.
@@ -289,12 +295,43 @@ class NestedCrossValidator:
         fold_results: List[FoldResult] = []
 
         # Bin labels once — same bins across all reps (deterministic given the
-        # label vector).
-        bins = self._stratify_bins(labels)
+        # label vector). Bin on stratify_labels when provided (e.g. age-source
+        # runs stratified on VWM so their outer folds match every VWM run
+        # byte-for-byte), else on the target.
+        if stratify_labels is not None and len(stratify_labels) != len(labels):
+            raise ValueError(
+                f"stratify_labels length {len(stratify_labels)} != "
+                f"labels length {len(labels)}"
+            )
+        strat = stratify_labels if stratify_labels is not None else labels
+        bins = self._stratify_bins(strat)
 
         all_folds = _shared_outer_folds(
             n=len(dataset), bins=bins, seeds=outer_seeds, n_outer=n_outer,
         )
+
+        # Persist a fold-index manifest so a later transfer run can ASSERT its
+        # outer folds align byte-for-byte with this (source) run's folds.
+        manifest = {
+            "n": len(dataset),
+            "n_outer": n_outer,
+            "n_repetitions": self.cfg.n_repetitions,
+            "outer_seeds": [int(s) for s in outer_seeds],
+            "folds": [
+                {
+                    "rep": fi // n_outer,
+                    "fold": fi % n_outer,
+                    "train_val_idx": sorted(map(int, tv)),
+                    "test_idx": sorted(map(int, te)),
+                }
+                for fi, (tv, te) in enumerate(all_folds)
+            ],
+        }
+        ckpt_root.mkdir(parents=True, exist_ok=True)
+        with open(ckpt_root / "fold_indices.json", "w") as f:
+            json.dump(manifest, f)
+        log.info("Wrote fold-index manifest: %s", ckpt_root / "fold_indices.json")
+
         for flat_idx, (train_val_idx, test_idx) in enumerate(all_folds):
             rep = flat_idx // n_outer
             fold_idx = flat_idx % n_outer
