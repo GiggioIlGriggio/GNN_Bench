@@ -226,4 +226,63 @@ with the frozen backbone — head dims vary, backbone shape stays fixed).
 
 ## A4 + A5 baselines
 
-<!-- Task 11 appends A4 (GLM→age) and A5 (age→VWM floor) below. -->
+Two control baselines for the A-table. Both run on the **same VWM cohort** as the
+B-arms (`dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt`) so
+every number in the table refers to one population.
+
+### A4 — GLM → age (specificity control)
+
+"Do the GLM node features carry *age* signal?" A normal nested GNN run with the
+GLM carrier and target = age, **age-stratified** (no `stratify_target` — this is a
+standalone reported number, *not* the VWM-stratified GLM source run of §2). If
+GLM→age ≪ GLM→VWM, the GLM vector is VWM-specific rather than a generic
+maturation signal. (A prior cross-cohort GLM→age control found r²≈0.04–0.11; this
+A4 reruns it within the fixed VWM cohort for an apples-to-apples A-table.)
+
+```bash
+PYTHONPATH=$(pwd) .venv/bin/python scripts/run_experiment.py \
+  dataset=pnc dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt \
+  model=gcn features=glm_diagonal labels=pnc_default \
+  trainer.search_space=configs/sweeper/source_age_pinned.yaml \
+  experiment_name=a4_glm_to_age \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  logging.project=age_vwm_transfer
+```
+
+(Use `trainer.search_space=…`, not `sweeper=…` — see §1. If you generated a
+GLM-specific cohort for B3/B4, use that same allowlist here.)
+
+### A5 — age → VWM, no graph (trivial developmental floor)
+
+"How much of VWM is just chronological age?" The classical-ML harness only
+accepts graph-derived inputs (`model.mlp_input ∈ {adjacency, node_features,
+both}`) — there is **no scalar-covariate (age-only) input mode**, so A5 is **not**
+a classical-harness run. It is the closed-form floor `r² = corr(age, VWM)²`
+computed on the fixed VWM cohort, recorded directly in `EXPERIMENTS.md`.
+
+Observed on the 973-subject cohort: **corr(age, VWM_overall_dprime) = 0.229 →
+A5 r² = 0.052** (a 5-fold out-of-sample age→VWM linear fit gives r² = 0.050,
+confirming the floor). Any B/C arm must beat ~0.05 to demonstrate the graph adds
+anything over age alone.
+
+Reproduce:
+
+```bash
+PYTHONPATH=$(pwd) .venv/bin/python - <<'PY'
+import pandas as pd, numpy as np
+from pathlib import Path
+csv = "/media/compa/DATA1/Compa/DATA_DERIVATIVES/PNC/T0/Tabular_data/PNC_ALL_SCORES.csv"
+df = pd.read_csv(csv, low_memory=False)
+df["key"] = df["SUBJID"].astype("Int64").astype(str).str[-10:].str.zfill(10)
+cohort = [l.strip().replace("sub-", "")
+          for l in Path("configs/subject_lists/pnc_vwm_cohort.txt").read_text().splitlines()
+          if l.strip() and not l.startswith("#")]
+sub = df[df["key"].isin(cohort)]
+age = pd.to_numeric(sub["age_at_cnb"], errors="coerce")
+vwm = pd.to_numeric(sub["VWM_overall_dprime"], errors="coerce")
+m = age.notna() & vwm.notna()
+r = np.corrcoef(age[m], vwm[m])[0, 1]
+print(f"n={m.sum()}  corr={r:.4f}  A5 floor r2={r**2:.4f}")
+PY
+```
+
