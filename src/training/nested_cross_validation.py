@@ -417,6 +417,8 @@ class NestedCrossValidator:
             model = model_factory(trial_model_cfg)
             state_dict = provider.state_dict_for(rep=rep, fold=fold)
             loaded, _skipped = load_partial_state_dict(model, state_dict)
+            # Guard assumes the model exposes a "backbone." submodule (the
+            # unimodal GNN backbone). Models without one skip this check.
             backbone_keys = [k for k in model.state_dict() if k.startswith("backbone")]
             missing = [k for k in backbone_keys if k not in loaded]
             if backbone_keys and missing:

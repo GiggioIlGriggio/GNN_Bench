@@ -57,3 +57,28 @@ def test_wrap_factory_raises_on_misalignment(tmp_path):
     import pytest
     with pytest.raises(ValueError, match="fold-index mismatch"):
         wrapped(None)
+
+
+def test_wrap_factory_raises_on_backbone_shape_mismatch(tmp_path):
+    import json
+    root = tmp_path / "src"
+    (root / "rep_0" / "fold_0").mkdir(parents=True)
+    # Source backbone is (4, 4) but _Tiny's backbone is (3, 3): load_partial_state_dict
+    # skips the shape-mismatched keys, so the safety guard must fire.
+    sd = {"backbone.weight": torch.full((4, 4), 7.0), "backbone.bias": torch.full((4,), 7.0)}
+    torch.save(sd, root / "rep_0" / "fold_0" / "model_best.pt")
+    # Manifest matches the wrapped call's indices so assert_aligned passes and we
+    # reach the shape guard (not the alignment ValueError).
+    (root / "fold_indices.json").write_text(json.dumps(
+        {"folds": [{"rep": 0, "fold": 0, "train_val_idx": [0, 1], "test_idx": [2]}]}
+    ))
+    from src.configs.trainer_config import TrainerConfig
+    ncv = NestedCrossValidator(cfg=TrainerConfig(),
+                               source_provider=SourceBackboneProvider(root),
+                               frozen_layers=[])
+    wrapped = ncv._wrap_factory_for_fold(
+        lambda cfg=None: _Tiny(), rep=0, fold=0, train_val_idx=[0, 1], test_idx=[2],
+    )
+    import pytest
+    with pytest.raises(RuntimeError, match="did not fully load"):
+        wrapped(None)
