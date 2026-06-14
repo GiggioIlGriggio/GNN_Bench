@@ -27,6 +27,131 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-13 — PNC age→VWM transfer (leakage-safe nested-CV; arms B1–B4 + A4/A5 + 2 age sources)
+
+**What.** Does a backbone **pretrained to predict age** transfer to **VWM**
+(`VWM_overall_dprime`) on PNC, under a leakage-safe nested-CV transfer protocol
+(per-outer-fold backbone injection + a fail-closed fold-alignment guard; infra
+PRs **#37 + #38**)? Two age "source" backbones are pretrained (one per carrier),
+then loaded into VWM runs as either a full fine-tune (`from_age_ft`) or a frozen
+backbone + fresh head (`from_age_frozen`). Carriers: **identity** (node id → the
+GCN reads the full SC connectivity) and **glm_diagonal** (node features = the
+per-node 2back-vs-0back GLM contrast). Arms:
+- **B1/B2** transfer the **identity** age-source (job 361349); B1 full-FT, B2 frozen.
+- **B3/B4** transfer the **glm_diagonal** age-source (job 361350); B3 full-FT, B4 frozen.
+- **A4** = GLM→age specificity control (does the GLM vector carry *age*?), age-stratified.
+- **A5** = closed-form age→VWM floor (no graph), `r²=corr(age,VWM)²` = **0.057** (corr=0.239).
+
+7 nested runs (jobs **361349–361355**), `gpunode02`, SHA **`20be17b`** (main, post
+#37+#38), wandb project **`age_vwm_transfer`** / entity `teampolpetta`.
+
+**Cohort (critical).** All arms share ONE **940-subject** allowlist (graph ∩
+non-NaN VWM ∩ GLM map = the binding constraint), generated **on the cluster**
+(`slurm/make_cohort.sh`, job 361348 — identical count to local). Identical subject
+set + VWM-stratified outer folds across the source and every VWM arm → the
+`SourceBackboneProvider` guard passes (no `fold-index mismatch`). Each B-arm's
+`features=` equals its source carrier (else the "did not fully load" guard fires).
+Without the shared cohort the age source (target near-universal, ~9.5k) and the VWM
+run (~1.5k) load different subjects and never align.
+
+**Shared recipe.** `dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer`, `--time=2-00:00:00`, default
+`hpo_metric=val_mae`, wandb entity `teampolpetta`.
+- **Sources / A4:** `labels=pnc_default
+  trainer.search_space=configs/sweeper/source_age_pinned.yaml`. Sources add
+  `stratify_target=VWM_overall_dprime` (VWM-stratified folds so VWM arms align);
+  A4 omits it (age-stratified standalone control).
+- **B-arms:** `labels=pnc_VWMdprime transfer=<from_age_ft|from_age_frozen>
+  transfer.source_checkpoint_root=checkpoints/<src_age_id-361349|src_age_glm-361350>
+  trainer.search_space=configs/sweeper/transfer_finetune.yaml` (optimizer + head
+  only — backbone shape frozen by the loaded weights). No `stratify_target` (the
+  VWM target's default stratification matches the source's VWM stratification).
+
+| arm | experiment_name | Job | carrier (`features=`) | source ckpt | transfer | frozen |
+|---|---|---|---|---|---|---|
+| B1 | `b1_age_vwm` | 361352 | identity     | src_age_id-361349  | from_age_ft     | `[]` |
+| B2 | `b2_age_vwm` | 361353 | identity     | src_age_id-361349  | from_age_frozen | `['backbone']` |
+| B3 | `b3_age_vwm` | 361354 | glm_diagonal | src_age_glm-361350 | from_age_ft     | `[]` |
+| B4 | `b4_age_vwm` | 361355 | glm_diagonal | src_age_glm-361350 | from_age_frozen | `['backbone']` |
+| A4 | `a4_glm_to_age` | 361351 | glm_diagonal | — (standalone) | — | — |
+| src | `src_age_id`  | 361349 | identity     | — (writes ckpt) | — | — |
+| src | `src_age_glm` | 361350 | glm_diagonal | — (writes ckpt) | — | — |
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all
+**9,400** out-of-fold predictions (940 subjects × 10 reps) vs the global mean →
+effective **N=940**. `±` = dispersion across (correlated) folds, **not** a standard
+error. All 7 `COMPLETED 0:0`; each pooled run's recomputed mean-of-folds r² matched
+its training-log value (no drift). Recovered from per-run
+`checkpoints/<name>-<jobid>/nested_cv_result.json` (ADR-0012) + wandb (project
+**`age_vwm_transfer`**, *not* the `.cluster-helper.yaml` default `orbitglm` — see
+[wandb_project_default_drift]).
+
+*Transfer arms → VWM* (sorted by r²):
+
+| arm | carrier / mode | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| **B3** | glm_diagonal / full-FT | 361354 | **0.195 ± 0.074** | **0.197** | 0.495 ± 0.050 | 0.495 ± 0.028 | 0.640 ± 0.039 | [rhr7vx35](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/rhr7vx35) |
+| **B4** | glm_diagonal / frozen | 361355 | 0.110 ± 0.062 | 0.112 | 0.346 ± 0.082 | 0.520 ± 0.026 | 0.673 ± 0.039 | [6ipvo2tm](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/6ipvo2tm) |
+| **B2** | identity / frozen | 361353 | 0.043 ± 0.037 | 0.044 | 0.230 ± 0.067 | 0.538 ± 0.022 | 0.698 ± 0.035 | [qwrnzw4x](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/qwrnzw4x) |
+| **B1** | identity / full-FT | 361352 | −0.039 ± 0.266 | −0.035 | 0.322 ± 0.060 | 0.563 ± 0.082 | 0.723 ± 0.084 | [f5w5nk82](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/f5w5nk82) |
+| *A5* | age only, no graph | — | — | **0.057** | 0.239 | — | — | closed-form |
+
+*Age sources + GLM→age control* (target = age, years):
+
+| run | desc | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| `src_age_id`    | identity→age (source for B1/B2) | 361349 | 0.451 ± 0.197 | 0.456 | 0.753 ± 0.046 | 1.863 ± 0.308 | 2.418 ± 0.386 | [z4dq2y2d](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/z4dq2y2d) |
+| `a4_glm_to_age` | GLM→age control (age-stratified) | 361351 | 0.106 ± 0.076 | 0.106 | 0.441 ± 0.051 | 2.476 ± 0.120 | 3.135 ± 0.172 | [wibzuma2](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/wibzuma2) |
+| `src_age_glm`   | glm_diagonal→age (source for B3/B4) | 361350 | 0.089 ± 0.156 | 0.093 | 0.436 ± 0.061 | 2.497 ± 0.237 | 3.148 ± 0.285 | [e7vx47l0](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/e7vx47l0) |
+
+**Corrected significance (ADR-0008).** Bouckaert-Frank corrected resampled paired
+t-test on per-outer-fold r² (`scripts/compare_models.py`, BH across the 6 B-arm
+pairs; folds are shared across arms — same cohort + VWM stratification):
+
+| A | B | Δr² (A−B) | p_raw | q (BH) | sig |
+|---|---|---|---|---|---|
+| B3 GLM-ft | B4 GLM-frozen | +0.085 | 0.061 | 0.142 | n.s. |
+| B2 ID-frozen | B3 GLM-ft | −0.152 | 0.0005 | **0.003** | **yes** |
+| B2 ID-frozen | B4 GLM-frozen | −0.068 | 0.071 | 0.142 | n.s. |
+| B1 ID-ft | B3 GLM-ft | −0.235 | 0.112 | 0.168 | n.s. |
+| B1 ID-ft | B4 GLM-frozen | −0.150 | 0.287 | 0.344 | n.s. |
+| B1 ID-ft | B2 ID-frozen | −0.082 | 0.567 | 0.567 | n.s. |
+
+Only **GLM-full-FT > ID-frozen** survives correction (q=0.003); the GLM
+full-FT-vs-frozen gap trends positive but n.s. (q=0.14). B1 (ID full-FT) is
+unstable (fold r² std 0.27 — full fine-tuning the identity backbone diverges on
+some folds), which kills the power of any B1 contrast.
+
+**Headline.**
+1. **The GLM carrier transfers; the identity carrier doesn't.** GLM arms (B3 0.197,
+   B4 0.112 pooled) sit well above the identity arms (B1 ≈0, B2 0.044); the only
+   corrected-significant contrast is GLM-ft > ID-frozen (q=0.003). Identity→VWM
+   stays at the ≈0 floor seen before (see Batch 2026-06-04 identity→VWM).
+2. **A frozen age-pretrained GLM backbone beats age alone (~2×).** B4 (frozen,
+   head-only) reaches pooled r² **0.112** vs the A5 age-only floor **0.057** — the
+   age-trained GLM representation carries VWM-relevant structure beyond chronological
+   age (head-only, no backbone update).
+3. **Full fine-tuning ≈ from-scratch GLM→VWM (no transfer bonus, no harm).** B3
+   (0.197) lands on the prior from-scratch GLM-diagonal→VWM plateau (≈0.18–0.22 on
+   the ~940 GLM cohort; Batches 2026-05-29 / 2026-06-04). Under full-FT the age init
+   is overwritten — the gain is intrinsic to the GLM features, not the age
+   pretraining. (No same-batch A3 from-scratch arm; this contrast is vs prior batches.)
+4. **GLM features barely encode age (specificity holds).** A4 GLM→age pooled 0.106
+   ≈ src_age_glm 0.093, ~4–5× below identity/SC→age (src_age_id 0.456). The GLM
+   2back-vs-0back contrast is VWM-specific, not a generic maturation signal —
+   consistent with Batch 2026-06-12 (GLM→age specificity control).
+
+**Caveats.** (i) No A3 (from-scratch VWM, same cohort) in this batch → "transfer vs
+scratch" leans on prior GLM→VWM numbers, not a same-batch arm. (ii) Significance is
+B-arm-vs-B-arm; B-vs-A5 is descriptive (A5 is closed-form, no per-fold array — use
+B4-vs-floor qualitatively). (iii) Frozen arms (B2/B4) ran *longer* than full-FT
+(14–15h vs 9–10h) — head-only converges slower / early-stops less. (iv) Nondeterminism
+unaddressed (single draw per arm), as in prior batches.
+
+---
+
 ## Batch 2026-06-11 — Classical-ML baselines (XGBoost / ElasticNet / MLP) vs the GNN (30-run matrix)
 
 **Goal.** Non-graph baselines that learn directly from connectivity (and from the
