@@ -42,3 +42,16 @@ def test_frozen_random_freezes_backbone_only():
     hd = {n: p.requires_grad for n, p in model.named_parameters() if n.startswith("head")}
     assert bb and not any(bb.values()), f"backbone must be frozen, got {bb}"
     assert hd and all(hd.values()), f"head must stay trainable, got {hd}"
+
+
+from pathlib import Path
+from omegaconf import OmegaConf
+
+
+def test_frozen_random_config_shape():
+    cfg = OmegaConf.load(Path("configs/transfer/frozen_random.yaml"))
+    # enabled=False => run_experiment builds NO SourceBackboneProvider.
+    assert cfg.enabled is False
+    assert cfg.source_checkpoint_root is None
+    # non-empty frozen_layers => triggers the freeze-only path.
+    assert list(cfg.frozen_layers) == ["backbone"]
