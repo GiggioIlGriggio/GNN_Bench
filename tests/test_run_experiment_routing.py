@@ -84,3 +84,25 @@ class TestUnknownRunnerRejected:
         # runner="nested" is explicit but valid — must never raise.
         result = select_runner(is_sweep=False, finetuning_enabled=False, runner="nested")
         assert result == "nested"
+
+
+from scripts.run_experiment import require_nested_for_transfer
+
+
+class TestRequireNestedForTransfer:
+    """Transfer OR a non-empty frozen_layers requires the nested runner."""
+
+    def test_enabled_non_nested_raises(self):
+        with pytest.raises(ValueError, match="requires the nested runner"):
+            require_nested_for_transfer(transfer_enabled=True, frozen_layers=[], runner="flat_cv")
+
+    def test_frozen_layers_non_nested_raises(self):
+        # frozen-random: enabled=False but frozen_layers set must still demand nested.
+        with pytest.raises(ValueError, match="requires the nested runner"):
+            require_nested_for_transfer(transfer_enabled=False, frozen_layers=["backbone"], runner="flat_cv")
+
+    def test_nested_ok(self):
+        require_nested_for_transfer(transfer_enabled=True, frozen_layers=["backbone"], runner="nested")
+
+    def test_no_transfer_no_frozen_ok(self):
+        require_nested_for_transfer(transfer_enabled=False, frozen_layers=[], runner="flat_cv")
