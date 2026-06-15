@@ -7,9 +7,14 @@ is non-empty, return a factory that builds a fresh model and freezes the backbon
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
+from omegaconf import OmegaConf
 
 from src.training.nested_cross_validation import NestedCrossValidator
+
+ROOT = Path(__file__).resolve().parent.parent  # tests/ -> repo root
 
 
 class _FakeModel(torch.nn.Module):
@@ -44,12 +49,8 @@ def test_frozen_random_freezes_backbone_only():
     assert hd and all(hd.values()), f"head must stay trainable, got {hd}"
 
 
-from pathlib import Path
-from omegaconf import OmegaConf
-
-
 def test_frozen_random_config_shape():
-    cfg = OmegaConf.load(Path("configs/transfer/frozen_random.yaml"))
+    cfg = OmegaConf.load(ROOT / "configs/transfer/frozen_random.yaml")
     # enabled=False => run_experiment builds NO SourceBackboneProvider.
     assert cfg.enabled is False
     assert cfg.source_checkpoint_root is None

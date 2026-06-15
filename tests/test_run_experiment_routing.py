@@ -106,3 +106,7 @@ class TestRequireNestedForTransfer:
 
     def test_no_transfer_no_frozen_ok(self):
         require_nested_for_transfer(transfer_enabled=False, frozen_layers=[], runner="flat_cv")
+
+    def test_frozen_only_nested_ok(self):
+        # frozen-random: enabled=False, frozen_layers set, runner=nested — must not raise.
+        require_nested_for_transfer(transfer_enabled=False, frozen_layers=["backbone"], runner="nested")

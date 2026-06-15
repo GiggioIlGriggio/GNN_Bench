@@ -397,9 +397,14 @@ class NestedCrossValidator:
     def _wrap_factory_for_fold(
         self, model_factory, *, rep: int, fold: int, train_val_idx, test_idx,
     ):
-        """Return a factory that loads the source backbone for (rep,fold).
+        """Return a factory that loads/freezes the backbone for (rep, fold).
 
-        No-op (returns ``model_factory``) when no source provider is set.
+        No-op (returns ``model_factory``) when no source provider is set AND
+        ``frozen_layers`` is empty (transfer=none / from-scratch). When
+        ``frozen_layers`` is non-empty but ``source_provider`` is None, returns a
+        factory that builds a fresh model and freezes the backbone (frozen-random
+        control). When ``source_provider`` is set, loads the age-pretrained
+        weights before freezing.
         """
         if self.source_provider is None:
             if not self.frozen_layers:
