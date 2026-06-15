@@ -402,7 +402,21 @@ class NestedCrossValidator:
         No-op (returns ``model_factory``) when no source provider is set.
         """
         if self.source_provider is None:
-            return model_factory
+            if not self.frozen_layers:
+                return model_factory
+            # Frozen-random control: no source checkpoint, but freeze a
+            # randomly-initialised backbone so only the head trains. Isolates the
+            # age-pretraining effect from a generic frozen graph projection.
+            from src.training.transfer_ops import freeze_layers
+
+            frozen = self.frozen_layers
+
+            def frozen_random_factory(trial_model_cfg):
+                model = model_factory(trial_model_cfg)
+                freeze_layers(model, frozen)
+                return model
+
+            return frozen_random_factory
 
         from src.interfaces.adapters import load_partial_state_dict
         from src.training.transfer_ops import freeze_layers, reinit_head
