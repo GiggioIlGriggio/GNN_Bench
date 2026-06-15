@@ -59,15 +59,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SUB_RE = re.compile(r"(sub-\d+)")
 
 
-def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str]]:
-    """Split CLI args into positional (out_path, labels, features) + extra overrides.
+def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str], list[str]]:
+    """Split CLI args into positionals + extra Hydra overrides.
 
-    Positional args are ``[OUT_PATH] [LABELS] [FEATURES]``. Any arg containing
-    ``=`` is treated as an extra Hydra override (e.g. ``dataset.root=/cluster/PNC``)
-    and forwarded verbatim to ``compose`` — this lets the cluster wrapper redirect
-    the dataset root, since the laptop path baked into ``configs/dataset/pnc.yaml``
-    does not exist on the cluster filesystem. Order-independent: overrides and
-    positionals may be interleaved.
+    Positionals are ``[OUT_PATH] [LABELS] [FEATURES] [ALSO_REQUIRE]``.
+    ALSO_REQUIRE is a comma-separated list of extra label configs whose targets
+    must ALSO be non-NaN (e.g. ``pnc_PCPT_accuracy`` for the TRITASK cohort).
+    Any arg containing ``=`` is treated as a Hydra override (e.g.
+    ``dataset.root=/cluster/PNC``) and forwarded verbatim. Order-independent.
     """
     extra_overrides = [a for a in argv if "=" in a]
     positional = [a for a in argv if "=" not in a]
@@ -76,7 +75,18 @@ def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str]]:
     )
     labels = positional[1] if len(positional) > 1 else "pnc_VWMdprime"
     features = positional[2] if len(positional) > 2 else "glm_diagonal"
-    return out_path, labels, features, extra_overrides
+    also_require = (
+        [s for s in positional[3].split(",") if s] if len(positional) > 3 else []
+    )
+    return out_path, labels, features, also_require, extra_overrides
+
+
+def intersect_cohorts(base: list[str], extra_sets: list[list[str]]) -> list[str]:
+    """Sorted intersection of a base subject list with zero or more extra sets."""
+    result = set(base)
+    for s in extra_sets:
+        result &= set(s)
+    return sorted(result)
 
 
 def main() -> None:
