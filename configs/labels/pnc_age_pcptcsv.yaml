@@ -1,0 +1,19 @@
+# Age target, but read from the PCPT-augmented scores CSV.
+#
+# Why this exists (not just pnc_default): the age→PCPT transfer source trains on
+# age yet must STRATIFY its outer folds on PCPT_precision so they align byte-for-
+# byte with the PCPT transfer arms (SourceBackboneProvider's fold-alignment guard
+# hard-fails otherwise). On the CLUSTER, the main PNC_ALL_SCORES.csv does NOT
+# carry PCPT_precision — only PNC_ALL_SCORES_PCPT.csv does (the two are identical
+# on the laptop but not on the cluster). Reading age from PNC_ALL_SCORES_PCPT.csv
+# makes PCPT_precision available to get_label_column(stratify_target) on the same
+# file the transfer arms (pnc_PCPT_accuracy) use, so the stratification values —
+# and therefore the folds — match exactly.
+target: age_at_cnb
+composite_columns: null
+composite_method: null
+composite_params: null
+metadata_file: "Tabular_data/PNC_ALL_SCORES_PCPT.csv"
+id_column: SUBJID
+glm_id_column: SUBJID_MATCHED
+normalize_components: false
