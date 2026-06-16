@@ -38,7 +38,7 @@ graph ∩ age ∩ VWM ∩ PCPT_precision ∩ GLM-map
 
 Generate **on the cluster** (`slurm/make_cohort.sh`) so the list contains cluster-loadable subjects, and confirm the exact count there (expected 937; local-vs-cluster data parity assumed but to be verified at gen time).
 
-> **Verified data facts (correcting the handoff):** `PCPT_precision` **is** present in the main `Tabular_data/PNC_ALL_SCORES.csv` (col 996), and `PNC_ALL_SCORES_PCPT.csv` is **byte-identical** to it. So the accuracy target needs no special data file, and the `pnc_PCPT_IES.yaml` config (which points at the main CSV) is **not** broken. The measure choice is therefore a purely scientific call, not a data-availability one.
+> **Data facts (laptop vs cluster — IMPORTANT):** On the **laptop**, `PCPT_precision` is present in the main `Tabular_data/PNC_ALL_SCORES.csv` (col 996) and `PNC_ALL_SCORES_PCPT.csv` is byte-identical to it. But on the **cluster** the two differ: the main CSV does **not** carry `PCPT_precision` — only `PNC_ALL_SCORES_PCPT.csv` does (this confirms the original handoff's warning; the cluster smoke surfaced it via a `KeyError: 'PCPT_precision'` when the age source tried to stratify off the main CSV). Consequence: any arm that needs `PCPT_precision` (target **or** `stratify_target`) must read it from `PNC_ALL_SCORES_PCPT.csv`. The transfer arms already do (their target uses `pnc_PCPT_accuracy` → that file); the **age source** must too — see §3.
 
 ## 3. The five arms
 
@@ -56,7 +56,7 @@ Single **identity** carrier ⇒ **one** source run and **two** transfer arms (fu
 
 `SourceBackboneProvider.assert_aligned` fails closed unless the consuming run's outer split is byte-identical to the source run's. So **every fold-based arm shares**: cohort=937, same seed, `stratify on PCPT_precision`, paper preset **10×5×20**. A new source run is mandatory:
 
-- **New source required.** The existing `src_age_id-361349` stratified on VWM over 940 → a different partition. Run a fresh identity→age source on the **937** cohort with `stratify_target=PCPT_precision` (so the transfer arms' default stratification aligns), `source_age_pinned` sweeper. Target=`age_at_cnb`, stratify=`PCPT_precision`.
+- **New source required.** The existing `src_age_id-361349` stratified on VWM over 940 → a different partition. Run a fresh identity→age source on the **937** cohort with `stratify_target=PCPT_precision` (so the transfer arms' default stratification aligns), `source_age_pinned` sweeper. **Use `labels=pnc_age_pcptcsv`** (target `age_at_cnb`, but metadata from `PNC_ALL_SCORES_PCPT.csv`) — **not** `pnc_default` — so `PCPT_precision` is readable for stratification on the cluster *and* the source's PCPT-stratify values come from the **same file** the transfer arms use, keeping folds byte-aligned. (Smoke-verified: source `361997` + B-frozen `361998` aligned cleanly with this config.)
 
 The VWM identity arms (B1/B2) are **not** re-run on 937 — they sit on 940 (3 subjects off), and pooled-r² makes them a perfectly good cross-reference without byte-identical folds.
 
@@ -74,6 +74,10 @@ All three serve this one experiment; bundle on `feature/age-pcpt-transfer` (the 
    - Test: backbone params are `requires_grad=False`, head is trainable, and no checkpoint file is read.
 
 3. **cohort generator — multi-column required-non-NaN.** Extend `scripts/make_pnc_vwm_cohort.py` to accept additional "required-non-NaN" columns beyond the single target (here add `PCPT_precision`), emitting `pnc_tritask_cohort.txt`. Small unit test. (A3 from-scratch needs no code — `transfer=none` already returns the plain factory.)
+
+4. **age-from-PCPT-csv label config (smoke-discovered).** `configs/labels/pnc_age_pcptcsv.yaml` — target `age_at_cnb`, metadata `PNC_ALL_SCORES_PCPT.csv`. Needed because the cluster's main scores CSV lacks `PCPT_precision` (§2 note); the source uses this so `stratify_target=PCPT_precision` resolves and its stratify values match the transfer arms' file. Validated by the smoke.
+
+**Cluster smoke (gpunode03, fast preset) — DONE & GREEN.** cohort=937 (PCPT CSV present); source id→age stratify=PCPT (`361997`) ✓; B-frozen (`361998`) fold-alignment PASS + froze 16 params + lr-fixed HPO (no `0.005`) ✓; frozen-random (`361994`) froze 16 params ✓; A3 (`361995`) `frozen_layers=[]` ✓. The infra is ready for the full 10×5×20 run (see `docs/runbooks/age-pcpt-transfer.md`).
 
 ## 5. Execution (cluster, after infra merges)
 
