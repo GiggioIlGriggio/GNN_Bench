@@ -27,6 +27,132 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-22 — PNC age→PCPT transfer (identity carrier; arms B-fullFT/B-frozen + A3/frozen-random/A5)
+
+**What.** Does an **age-pretrained identity backbone** transfer to **PCPT accuracy**
+(`PCPT_precision`) on PNC, under the same leakage-safe nested-CV transfer protocol as
+the age→VWM batch (per-outer-fold backbone injection + a fail-closed fold-alignment
+guard; infra PRs **#37 + #38**)? One **identity** age "source" backbone (job 362451)
+is pretrained, then loaded into PCPT runs as either a full fine-tune (`from_age_ft`)
+or a frozen backbone + fresh head (`from_age_frozen`). PCPT is **~5× more age-coupled
+than VWM** (corr(age,PCPT)=0.533 ⇒ closed-form age floor **r²=0.284** vs VWM's 0.057),
+so the controls are load-bearing: **A3** from-scratch, **frozen-random** (random frozen
+backbone, no checkpoint) and **A5** (closed-form age floor). Sibling of Batch
+2026-06-13 (age→VWM); single identity carrier (no GLM arm).
+
+5 nested runs (jobs **362451–362455**), `gpunode02`/`rtx6000`, SHA **`f6d8c4f`**
+(feature/age-pcpt-transfer), wandb project **`age_pcpt_transfer`** / entity
+`teampolpetta`.
+
+**Cohort (critical).** All arms share ONE **937-subject** TRITASK allowlist (graph ∩
+non-NaN VWM ∩ non-NaN PCPT ∩ GLM map = VWM-940 − 3), generated **on the cluster**
+(`slurm/make_cohort.sh` with the `also_require=pnc_PCPT_accuracy` 4th positional).
+Identical subject set + PCPT-stratified outer folds across the source and every PCPT
+arm → the `SourceBackboneProvider` guard passes (no `fold-index mismatch`). The source
+stratifies via `stratify_target=PCPT_precision` (target stays age); the PCPT arms
+stratify on their own target by default.
+
+**Cluster CSV gotcha.** On the cluster `Tabular_data/PNC_ALL_SCORES.csv` lacks
+`PCPT_precision` (only `…_PCPT.csv` has it; identical on the laptop, NOT on the
+cluster). So the age source uses **`labels=pnc_age_pcptcsv`** (age target, PCPT
+metadata) — *not* `pnc_default`, which `KeyError`s on the stratify column — and the
+PCPT arms use `labels=pnc_PCPT_accuracy`. (See [cluster_pcpt_csv_split].)
+
+**Shared recipe.** `dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_tritask_cohort.txt model=gcn
+features=identity trainer.n_repetitions=10 trainer.n_outer_folds=5
+trainer.inner_hpo_trials=20 trainer.epochs=300 logging.project=age_pcpt_transfer`,
+default `hpo_metric=val_mae`, wandb entity `teampolpetta`.
+- **Source / A3:** `trainer.search_space=configs/sweeper/source_age_pinned.yaml`.
+  Source adds `labels=pnc_age_pcptcsv stratify_target=PCPT_precision`; A3 is
+  `labels=pnc_PCPT_accuracy transfer=none` (from scratch, same cohort + stratification).
+- **B-arms / frozen-random:** `labels=pnc_PCPT_accuracy
+  trainer.search_space=configs/sweeper/transfer_finetune.yaml` (lr grid
+  1e-4/5e-4/1e-3 — **5e-3 dropped**; it diverged the identity full-FT in the VWM
+  batch, see [age_vwm_transfer_dynamics]). B-arms add `transfer=<from_age_ft|from_age_frozen>
+  transfer.source_checkpoint_root=checkpoints/src_age_id_pcpt-362451`; frozen-random
+  is `transfer=frozen_random` (random frozen backbone, no checkpoint).
+
+| arm | experiment_name | Job | transfer | source ckpt | frozen |
+|---|---|---|---|---|---|
+| B-fullFT | `b_fullft_pcpt` | 362452 | from_age_ft | src_age_id_pcpt-362451 | `[]` |
+| B-frozen | `b_frozen_pcpt` | 362453 | from_age_frozen | src_age_id_pcpt-362451 | `['backbone']` |
+| frozen-random | `frozen_random_pcpt` | 362454 | frozen_random | — (random) | `['backbone']` |
+| A3 | `a3_scratch_pcpt` | 362455 | none | — | — |
+| src | `src_age_id_pcpt` | 362451 | — (writes ckpt) | — | — |
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all **9,370**
+out-of-fold predictions (937 subjects × 10 reps) vs the global mean → effective
+**N=937**. `±` = dispersion across (correlated) folds, **not** a standard error. All 5
+`COMPLETED 0:0`; each pooled run's recomputed mean-of-folds r² matched its
+training-log value (no drift). Recovered from per-run
+`checkpoints/<name>-<jobid>/nested_cv_result.json` (ADR-0012) + wandb (project
+**`age_pcpt_transfer`**, *not* the `.cluster-helper.yaml` default `orbitglm` — see
+[wandb_project_default_drift]).
+
+*Transfer arms + controls → PCPT* (sorted by r²):
+
+| arm | mode | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| **B-frozen** | age-id / frozen | 362453 | **0.154 ± 0.058** | **0.151** | 0.407 ± 0.067 | 0.080 ± 0.004 | 0.110 ± 0.012 | [gxg66rlo](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/gxg66rlo) |
+| **B-fullFT** | age-id / full-FT | 362452 | 0.103 ± 0.107 | 0.101 | 0.394 ± 0.082 | 0.081 ± 0.005 | 0.113 ± 0.013 | [ywie9skh](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/ywie9skh) |
+| frozen-random | random / frozen | 362454 | 0.058 ± 0.051 | 0.058 | 0.282 ± 0.078 | 0.084 ± 0.004 | 0.116 ± 0.011 | [7cshnaq7](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/7cshnaq7) |
+| A3 | from scratch | 362455 | −0.065 ± 0.595 | −0.053 | 0.361 ± 0.084 | 0.088 ± 0.024 | 0.120 ± 0.026 | [bni3jjbj](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/bni3jjbj) |
+| *A5* | age only, no graph | — | — | **0.284** | 0.533 | — | — | closed-form |
+
+*Age source* (target = age, years):
+
+| run | desc | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| `src_age_id_pcpt` | identity→age (source for B-arms), PCPT-stratified | 362451 | 0.481 ± 0.152 | 0.482 | 0.755 ± 0.035 | 1.806 ± 0.297 | 2.362 ± 0.336 | [reazqw8x](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/reazqw8x) |
+
+**Corrected significance (ADR-0008).** Bouckaert–Frank corrected resampled paired
+t-test on per-outer-fold r² (`src/training/statistical_tests.py`, the
+`scripts/compare_models.py` test; BH across all 6 pairs of the 4 PCPT arms; folds are
+shared — same cohort + PCPT stratification):
+
+| A | B | Δr² (A−B) | p_raw | q (BH) | sig |
+|---|---|---|---|---|---|
+| B-frozen | frozen-random | +0.096 | 0.0003 | **0.002** | **yes** |
+| B-frozen | B-fullFT | +0.051 | 0.246 | 0.691 | n.s. |
+| B-frozen | A3 | +0.219 | 0.484 | 0.691 | n.s. |
+| B-fullFT | frozen-random | +0.045 | 0.382 | 0.691 | n.s. |
+| B-fullFT | A3 | +0.168 | 0.598 | 0.691 | n.s. |
+| frozen-random | A3 | +0.123 | 0.691 | 0.691 | n.s. |
+
+Only **B-frozen > frozen-random** survives correction (q=0.002). Contrasts against A3
+carry large Δr² but stay n.s. — A3's per-fold r² std is **0.595** (from-scratch
+identity diverges on some folds, like B1 in the VWM batch), which destroys the power
+of any A3 contrast.
+
+**Headline.**
+1. **The age-pretrained backbone carries PCPT signal beyond a random projection.**
+   B-frozen (pooled **0.151**) significantly beats frozen-random (0.058; q=0.002, the
+   only surviving contrast) — the age *training*, not just any random frozen
+   projection, encodes PCPT-relevant structure (head-only, backbone untouched).
+2. **…but it does NOT beat chronological age.** Every transfer arm sits **below** the
+   A5 age floor (B-frozen 0.151, B-fullFT 0.101 vs **0.284** pooled). Unlike age→VWM
+   (where the frozen GLM backbone beat its 0.057 floor ~2×), PCPT's ~5× higher
+   age-coupling means a closed-form age regression outpredicts the transferred GNN
+   representation. The backbone carries *age-correlated* PCPT variance — less
+   efficiently than age itself.
+3. **Frozen > full-FT (point estimate); neither beats scratch significantly.**
+   Ordering B-frozen (0.151) > B-fullFT (0.101) > frozen-random (0.058) > A3 (−0.053),
+   but no contrast among {B-frozen, B-fullFT, A3} survives correction — A3's fold
+   instability (std 0.595) under-powers the transfer-vs-scratch test. Consistent with
+   the VWM batch: full fine-tuning the identity backbone is unstable and shows no
+   transfer bonus over frozen.
+
+**Caveats.** (i) A3 (from-scratch identity) has extreme fold variance (r² std 0.595 —
+diverges on some folds), so transfer-vs-scratch contrasts are descriptive, not
+powered. (ii) B-vs-A5 is descriptive (A5 is closed-form, no per-fold array). (iii)
+Frozen / random-frozen arms ran *longer* than full-FT (frozen ~12h, frozen-random
+~23h vs full-FT ~8h) — head-only converges slower / early-stops less (as in the VWM
+batch). (iv) Nondeterminism unaddressed (single draw per arm). (v) A5=0.284 computed
+on the 937 cohort (corr +0.533); not recomputed byte-exact on the cluster split.
+
+---
+
 ## Batch 2026-06-13 — PNC age→VWM transfer (leakage-safe nested-CV; arms B1–B4 + A4/A5 + 2 age sources)
 
 **What.** Does a backbone **pretrained to predict age** transfer to **VWM**
