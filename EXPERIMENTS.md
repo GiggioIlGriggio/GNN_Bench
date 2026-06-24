@@ -27,6 +27,63 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-24 — ElasticNet VWM input comparison: GLM vs connectivity vs concatenation
+
+**What.** Does **concatenating raw connectivity onto the GLM-activation vector** help a
+non-graph ElasticNet predict PNC VWM (`pnc_VWMdprime`), over GLM alone? The 2026-06-11
+batch left this open: GLM→VWM (0.246) ≫ connectivity→VWM (0.110), but never tested the
+union. One **new** run adds the concat arm; the GLM-only and connectivity-only arms are
+**reused** from 2026-06-11 (byte-identical folds — `splits.py`/`flatten.py`/
+`sklearn_nested_cv.py` unchanged since; the dataset diff since is purely additive). The
+concat needs **no new code** — `flatten.py`'s `input_mode="both"` concatenates
+`[adjacency(79,800) ++ glm node-features(400)]`, exposed via `model.mlp_input=both`.
+
+1 new nested run (job **362523**), `node01` (CPU partition `cluster`/qos `normal`),
+SHA **`755ac5b`** (main), wandb project **`baselines`** / entity `teampolpetta`. Report
+`reports/2026-06-24-elasticnet-vwm-input-comparison.md`.
+
+**Cohort (critical).** The two GLM-bearing arms (GLM-only, concat) run on the
+**940-subject** GLM-map cohort (`n_pooled=9400`). The reused connectivity-only arm
+(`enet-pnc-sc-vwm`, `features=default`) never loads the GLM map, so it ran on **973**
+subjects (`n_pooled=9730`) — **not fold-matched**, hence reported as descriptive context
+only, *not* in the paired test. A fold-matched conn-only cell (`features=glm_scalar
+model.mlp_input=adjacency`, 940 cohort) was not run.
+
+**Recipe (new concat cell).** `dataset=pnc model=elasticnet features=glm_scalar
+labels=pnc_VWMdprime model.mlp_input=both experiment_name=enet-pnc-scglm-vwm
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/elasticnet.yaml`, via
+`slurm/train_sklearn.sh` on a CPU node (`cluster-submit --node node01`).
+
+**Results** (mean ± std over 50 outer folds; pooled = single r² over all out-of-fold
+predictions; ± is fold dispersion, not a SE). wandb project `baselines`.
+
+| experiment_name | input (dim) | r² (mean-of-folds) | r² (pooled) | Pearson r (pooled) | cohort (n_pooled) | run |
+|---|---|---|---|---|---|---|
+| `enet-pnc-glm-vwm` (361221)   | glm_scalar (400)   | **0.244 ± 0.045** | **0.246** | 0.496 | 940 (9400) | [40hguv2e](https://wandb.ai/teampolpetta/baselines/runs/40hguv2e) |
+| `enet-pnc-scglm-vwm` (362523) | both (80,200)      | 0.200 ± 0.063 | 0.204 | 0.452 | 940 (9400) | [sjg97qk2](https://wandb.ai/teampolpetta/baselines/runs/sjg97qk2) |
+| `enet-pnc-sc-vwm` (361214)*   | adjacency (79,800) | 0.109 ± 0.033 | 0.110 | 0.333 | 973 (9730) | [4fwu06yf](https://wandb.ai/teampolpetta/baselines/runs/4fwu06yf) |
+
+`*` different (larger) cohort — context only, not fold-matched.
+
+**Statistical test (matched, GLM-only vs concat).** Corrected resampled paired t-test
+(`scripts/compare_models.py`, ADR-0008) on `r2`, both arms `n_pooled=9400`:
+```
+enet-concat vs enet-glm-only : mean_diff −0.044  t=−1.33  p=0.19  (ns)
+```
+Artifacts: `reports/comparison/vwm-glm-vs-concat/`.
+
+**Findings.**
+1. **Concatenation does not beat GLM-only.** Concat (0.204) is nominally *below* GLM-only
+   (0.246); on matched folds the difference is **not significant** (p=0.19). Raw
+   connectivity adds no detectable VWM signal on top of the GLM contrast.
+2. **Direction is dilution.** The 400 GLM dims are 0.5% of the 80,200-dim concat; per-column
+   scaling + shared L1/L2 lets the 79,800 connectivity columns crowd them, nudging r² down
+   within fold noise — expected, not a bug.
+3. **GLM ≫ connectivity-alone** (0.246 vs 0.110) replicates 2026-06-11.
+
+---
+
 ## Batch 2026-06-22 — PNC age→PCPT transfer (identity carrier; arms B-fullFT/B-frozen + A3/frozen-random/A5)
 
 **What.** Does an **age-pretrained identity backbone** transfer to **PCPT accuracy**
