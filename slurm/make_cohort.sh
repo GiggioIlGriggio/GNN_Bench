@@ -48,8 +48,13 @@ PYTHONPATH="$(pwd)" singularity exec \
         ${RUN_ARGS:-} \
         "$PNC_ROOT_OVERRIDE"
 
-# Report the result so the job log shows the cohort size at a glance.
+# Report the result. Derive the cohort file from the first non-'=' token of
+# RUN_ARGS (the OUT_PATH positional); fall back to the VWM default. Assumes the
+# first positional is the output path and contains no spaces (true for PNC paths).
 COHORT_FILE="configs/subject_lists/pnc_vwm_cohort.txt"
+for tok in ${RUN_ARGS:-}; do
+    if [[ "$tok" != *"="* ]]; then COHORT_FILE="$tok"; break; fi
+done
 if [[ -f "$COHORT_FILE" ]]; then
     N=$(grep -cvE '^\s*(#|$)' "$COHORT_FILE")
     echo "[cohort] $COHORT_FILE has $N subject ids"

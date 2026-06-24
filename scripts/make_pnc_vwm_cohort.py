@@ -30,10 +30,14 @@ deliberately want the larger graph∩VWM set for an ID-only experiment.)
 Usage
 -----
     PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py \
-        [OUT_PATH] [LABELS] [FEATURES] [extra.hydra=override ...]
+        [OUT_PATH] [LABELS] [FEATURES] [ALSO_REQUIRE] [extra.hydra=override ...]
 
 Defaults: OUT_PATH=configs/subject_lists/pnc_vwm_cohort.txt
           LABELS=pnc_VWMdprime  FEATURES=glm_diagonal
+
+ALSO_REQUIRE (4th positional) is a comma-separated list of extra label configs
+whose targets must ALSO be non-NaN — used to build multi-target cohorts (e.g.
+the TRITASK cohort = VWM ∩ PCPT via ``pnc_PCPT_accuracy``).
 
 Any arg containing ``=`` is forwarded verbatim as an extra Hydra override. This
 is how the cluster wrapper (``slurm/make_cohort.sh``) redirects the dataset root:
@@ -59,15 +63,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 _SUB_RE = re.compile(r"(sub-\d+)")
 
 
-def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str]]:
-    """Split CLI args into positional (out_path, labels, features) + extra overrides.
+def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str], list[str]]:
+    """Split CLI args into positionals + extra Hydra overrides.
 
-    Positional args are ``[OUT_PATH] [LABELS] [FEATURES]``. Any arg containing
-    ``=`` is treated as an extra Hydra override (e.g. ``dataset.root=/cluster/PNC``)
-    and forwarded verbatim to ``compose`` — this lets the cluster wrapper redirect
-    the dataset root, since the laptop path baked into ``configs/dataset/pnc.yaml``
-    does not exist on the cluster filesystem. Order-independent: overrides and
-    positionals may be interleaved.
+    Positionals are ``[OUT_PATH] [LABELS] [FEATURES] [ALSO_REQUIRE]``.
+    ALSO_REQUIRE is a comma-separated list of extra label configs whose targets
+    must ALSO be non-NaN (e.g. ``pnc_PCPT_accuracy`` for the TRITASK cohort).
+    Any arg containing ``=`` is treated as a Hydra override (e.g.
+    ``dataset.root=/cluster/PNC``) and forwarded verbatim. Order-independent.
     """
     extra_overrides = [a for a in argv if "=" in a]
     positional = [a for a in argv if "=" not in a]
@@ -76,36 +79,34 @@ def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str]]:
     )
     labels = positional[1] if len(positional) > 1 else "pnc_VWMdprime"
     features = positional[2] if len(positional) > 2 else "glm_diagonal"
-    return out_path, labels, features, extra_overrides
+    also_require = (
+        [s for s in positional[3].split(",") if s] if len(positional) > 3 else []
+    )
+    return out_path, labels, features, also_require, extra_overrides
 
 
-def main() -> None:
-    out_path, labels, features, extra_overrides = parse_args(sys.argv[1:])
+def intersect_cohorts(base: list[str], extra_sets: list[list[str]]) -> list[str]:
+    """Sorted intersection of a base subject list with zero or more extra sets."""
+    result = set(base)
+    for s in extra_sets:
+        result &= set(s)
+    return sorted(result)
 
+
+def _loadable_sub_ids(cfg) -> list[str]:
+    """Bare 'sub-XXXXXXXXXX' ids loadable under a composed config (NaN-filtered
+    on that config's target). Composed cfg must already carry dataset/labels/features.
+    """
     from src.configs.dataset_config import DatasetConfig
     from src.configs.feature_config import FeatureConfig
     from src.configs.label_config import LabelConfig
     from src.datasets.registry import get_dataset
 
-    config_dir = str(REPO_ROOT / "configs")
-    with initialize_config_dir(version_base=None, config_dir=config_dir):
-        cfg = compose(
-            config_name="experiment",
-            overrides=[
-                f"dataset=pnc",
-                f"labels={labels}",
-                f"features={features}",
-                *extra_overrides,
-            ],
-        )
-
     dataset_cfg = DatasetConfig(**OmegaConf.to_container(cfg.dataset, resolve=True))
     feature_cfg = FeatureConfig(**OmegaConf.to_container(cfg.features, resolve=True))
     label_cfg = LabelConfig(**OmegaConf.to_container(cfg.labels, resolve=True))
-
     print(
-        f"Loading PNC with labels={labels} (target={label_cfg.target}), "
-        f"features={features} to determine the loadable cohort...",
+        f"Loading PNC with target={label_cfg.target} to determine the loadable cohort...",
         flush=True,
     )
     dataset = get_dataset(
@@ -113,12 +114,7 @@ def main() -> None:
         feature_cfg=feature_cfg, label_cfg=label_cfg,
     )
     dataset.load_raw()
-
-    # subject_ids are "sub-XXXXXXXXXX" for single-timepoint PNC; for multi-tp
-    # they are prefixed (e.g. "T0_sub-..."), so extract the bare sub-id, which
-    # is what the allowlist check compares against.
-    sub_ids = []
-    seen = set()
+    sub_ids, seen = [], set()
     for sid in dataset._subject_ids:
         m = _SUB_RE.search(sid)
         if not m:
@@ -127,12 +123,33 @@ def main() -> None:
         if bare not in seen:
             seen.add(bare)
             sub_ids.append(bare)
+    return sub_ids
 
-    sub_ids.sort()
+
+def main() -> None:
+    out_path, labels, features, also_require, extra_overrides = parse_args(sys.argv[1:])
+
+    config_dir = str(REPO_ROOT / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        def _compose(label):
+            return compose(
+                config_name="experiment",
+                overrides=[
+                    "dataset=pnc", f"labels={label}", f"features={features}",
+                    *extra_overrides,
+                ],
+            )
+
+        base_ids = _loadable_sub_ids(_compose(labels))
+        extra_sets = [_loadable_sub_ids(_compose(lbl)) for lbl in also_require]
+
+    sub_ids = intersect_cohorts(base_ids, extra_sets)
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    require_desc = f" AND non-NaN {','.join(also_require)}" if also_require else ""
     header = (
-        f"# PNC VWM cohort (target={label_cfg.target}, features={features}): "
-        f"{len(sub_ids)} subjects with a graph AND a non-NaN VWM score.\n"
+        f"# PNC cohort (target={labels}, features={features}): "
+        f"{len(sub_ids)} subjects with a graph AND a non-NaN target{require_desc}.\n"
         f"# Generated by scripts/make_pnc_vwm_cohort.py — pass as "
         f"dataset.subject_list_file to ALL arms so folds align.\n"
     )
