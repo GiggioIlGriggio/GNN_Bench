@@ -1,0 +1,6 @@
+# B2/B4: head-only (backbone frozen) from an age-pretrained backbone.
+enabled: true
+source_checkpoint_root: ???   # set on CLI
+checkpoint_variant: best
+frozen_layers:
+  - backbone

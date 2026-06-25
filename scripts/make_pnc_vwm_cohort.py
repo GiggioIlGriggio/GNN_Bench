@@ -1,0 +1,161 @@
+"""Generate the PNC VWM-cohort subject allowlist for age→VWM transfer.
+
+Why this exists
+---------------
+The leakage-safe age→VWM transfer design (docs/superpowers/specs/
+2026-06-13-pnc-age-vwm-transfer-design.md) requires the age "source" run and
+the VWM run to operate on an *identical* subject set, so their nested-CV outer
+folds match byte-for-byte — the ``SourceBackboneProvider`` alignment guard
+hard-fails otherwise.
+
+On PNC this is not automatic: ``age_at_cnb`` is near-universal (~9.5k subjects)
+while ``VWM_overall_dprime`` is sparse (~1.4k), and the dataset NaN-filters on
+the *current target*. So an unrestricted age run loads a much larger cohort than
+the VWM run, and the two fold partitions can never coincide. (Every VWM subject
+does have an age, so the VWM cohort is the binding constraint.)
+
+This script writes the *loadable* VWM cohort to a ``.txt`` allowlist, one
+``sub-XXXXXXXXXX`` id per line. Pass it as ``dataset.subject_list_file=<path>``
+to EVERY PNC run in this experiment (source age, A3 from-scratch, B transfer, C
+concatenation) so all arms share one cohort and one fold partition.
+
+Binding cohort: the default carrier is ``glm_diagonal``, which requires each
+subject to have a graph, a non-NaN VWM score, AND the GLM map — the *binding*
+constraint (940 subjects vs 973 for graph∩VWM alone). Using this single cohort
+for every arm keeps the whole matrix on the identical subject set, so all
+cross-arm comparisons are same-subject. Identity-carrier arms (B1/B2) run on it
+fine since every subject also has a graph. (Pass ``features=identity`` only if you
+deliberately want the larger graph∩VWM set for an ID-only experiment.)
+
+Usage
+-----
+    PYTHONPATH=$(pwd) .venv/bin/python scripts/make_pnc_vwm_cohort.py \
+        [OUT_PATH] [LABELS] [FEATURES] [ALSO_REQUIRE] [extra.hydra=override ...]
+
+Defaults: OUT_PATH=configs/subject_lists/pnc_vwm_cohort.txt
+          LABELS=pnc_VWMdprime  FEATURES=glm_diagonal
+
+ALSO_REQUIRE (4th positional) is a comma-separated list of extra label configs
+whose targets must ALSO be non-NaN — used to build multi-target cohorts (e.g.
+the TRITASK cohort = VWM ∩ PCPT via ``pnc_PCPT_accuracy``).
+
+Any arg containing ``=`` is forwarded verbatim as an extra Hydra override. This
+is how the cluster wrapper (``slurm/make_cohort.sh``) redirects the dataset root:
+``configs/dataset/pnc.yaml`` bakes in the laptop path, which does not exist on the
+cluster, so the wrapper passes ``dataset.root=/data/.../PNC`` to point at the
+cluster derivatives. Example::
+
+    ... scripts/make_pnc_vwm_cohort.py \
+        configs/subject_lists/pnc_vwm_cohort.txt pnc_VWMdprime glm_diagonal \
+        dataset.root=/data/bdip_ssd/al5165/GNNBenchV2/data/PNC
+"""
+
+from __future__ import annotations
+
+import re
+import sys
+from pathlib import Path
+
+from hydra import compose, initialize_config_dir
+from omegaconf import OmegaConf
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+_SUB_RE = re.compile(r"(sub-\d+)")
+
+
+def parse_args(argv: list[str]) -> tuple[Path, str, str, list[str], list[str]]:
+    """Split CLI args into positionals + extra Hydra overrides.
+
+    Positionals are ``[OUT_PATH] [LABELS] [FEATURES] [ALSO_REQUIRE]``.
+    ALSO_REQUIRE is a comma-separated list of extra label configs whose targets
+    must ALSO be non-NaN (e.g. ``pnc_PCPT_accuracy`` for the TRITASK cohort).
+    Any arg containing ``=`` is treated as a Hydra override (e.g.
+    ``dataset.root=/cluster/PNC``) and forwarded verbatim. Order-independent.
+    """
+    extra_overrides = [a for a in argv if "=" in a]
+    positional = [a for a in argv if "=" not in a]
+    out_path = Path(positional[0]) if len(positional) > 0 else (
+        REPO_ROOT / "configs" / "subject_lists" / "pnc_vwm_cohort.txt"
+    )
+    labels = positional[1] if len(positional) > 1 else "pnc_VWMdprime"
+    features = positional[2] if len(positional) > 2 else "glm_diagonal"
+    also_require = (
+        [s for s in positional[3].split(",") if s] if len(positional) > 3 else []
+    )
+    return out_path, labels, features, also_require, extra_overrides
+
+
+def intersect_cohorts(base: list[str], extra_sets: list[list[str]]) -> list[str]:
+    """Sorted intersection of a base subject list with zero or more extra sets."""
+    result = set(base)
+    for s in extra_sets:
+        result &= set(s)
+    return sorted(result)
+
+
+def _loadable_sub_ids(cfg) -> list[str]:
+    """Bare 'sub-XXXXXXXXXX' ids loadable under a composed config (NaN-filtered
+    on that config's target). Composed cfg must already carry dataset/labels/features.
+    """
+    from src.configs.dataset_config import DatasetConfig
+    from src.configs.feature_config import FeatureConfig
+    from src.configs.label_config import LabelConfig
+    from src.datasets.registry import get_dataset
+
+    dataset_cfg = DatasetConfig(**OmegaConf.to_container(cfg.dataset, resolve=True))
+    feature_cfg = FeatureConfig(**OmegaConf.to_container(cfg.features, resolve=True))
+    label_cfg = LabelConfig(**OmegaConf.to_container(cfg.labels, resolve=True))
+    print(
+        f"Loading PNC with target={label_cfg.target} to determine the loadable cohort...",
+        flush=True,
+    )
+    dataset = get_dataset(
+        name=dataset_cfg.name, cfg=dataset_cfg,
+        feature_cfg=feature_cfg, label_cfg=label_cfg,
+    )
+    dataset.load_raw()
+    sub_ids, seen = [], set()
+    for sid in dataset._subject_ids:
+        m = _SUB_RE.search(sid)
+        if not m:
+            continue
+        bare = m.group(1)
+        if bare not in seen:
+            seen.add(bare)
+            sub_ids.append(bare)
+    return sub_ids
+
+
+def main() -> None:
+    out_path, labels, features, also_require, extra_overrides = parse_args(sys.argv[1:])
+
+    config_dir = str(REPO_ROOT / "configs")
+    with initialize_config_dir(version_base=None, config_dir=config_dir):
+        def _compose(label):
+            return compose(
+                config_name="experiment",
+                overrides=[
+                    "dataset=pnc", f"labels={label}", f"features={features}",
+                    *extra_overrides,
+                ],
+            )
+
+        base_ids = _loadable_sub_ids(_compose(labels))
+        extra_sets = [_loadable_sub_ids(_compose(lbl)) for lbl in also_require]
+
+    sub_ids = intersect_cohorts(base_ids, extra_sets)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    require_desc = f" AND non-NaN {','.join(also_require)}" if also_require else ""
+    header = (
+        f"# PNC cohort (target={labels}, features={features}): "
+        f"{len(sub_ids)} subjects with a graph AND a non-NaN target{require_desc}.\n"
+        f"# Generated by scripts/make_pnc_vwm_cohort.py — pass as "
+        f"dataset.subject_list_file to ALL arms so folds align.\n"
+    )
+    out_path.write_text(header + "\n".join(sub_ids) + "\n")
+    print(f"Wrote {len(sub_ids)} subject ids to {out_path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -319,6 +319,37 @@ class PNCDataset(BrainGraphDataset):
         self._label_builder._label_names = list(df.columns)
         return df
 
+    def get_label_column(self, column: str) -> np.ndarray:
+        """Per-subject vector for an arbitrary metadata column (PNC override).
+
+        Reads the column directly from the per-subject metadata dicts (like
+        :meth:`get_label_components`) to sidestep
+        :class:`~src.datasets.label_builder.LabelBuilder`'s integer-ID cast,
+        which cannot recover PNC's 12-digit ``SUBJID`` (``6000XXXXXXXXXX``)
+        from the ``sub-XXXXXXXXXX`` filename ID.  Returns raw float values in
+        ``self._subject_ids`` order — used to stratify a source run on a column
+        other than its regression target (e.g. age-source runs stratified on
+        VWM so their folds match the VWM runs).
+
+        Uses ``metadata[column]`` (not ``.get(column)``) so a missing column
+        raises a clear ``KeyError`` rather than silently producing ``NaN``;
+        stratification on a typo'd column should fail loudly.
+
+        Parameters
+        ----------
+        column : str
+            Name of the metadata column to extract.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``[num_subjects]``, dtype float, in subject-ID order.
+        """
+        return np.asarray(
+            [float(self._raw_data[sid].metadata[column]) for sid in self._subject_ids],
+            dtype=float,
+        )
+
     def get_labels(self) -> np.ndarray:
         """Return label array of shape ``[N]`` for all loaded subjects.
 

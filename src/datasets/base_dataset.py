@@ -282,6 +282,45 @@ class BrainGraphDataset(ABC):
         """
         return self._label_builder.build(self._subject_ids, self._metadata)
 
+    def get_label_column(self, column: str) -> np.ndarray:
+        """Build a per-subject vector for an arbitrary metadata column.
+
+        Reuses the :class:`~src.datasets.label_builder.LabelBuilder`
+        single-target path (the same machinery :meth:`get_labels` uses) so the
+        returned vector's ordering and subject-ID resolution match
+        :meth:`get_labels` exactly.  Used to stratify a run on a column other
+        than its own regression target (e.g. an age-source run stratified on
+        VWM so its folds match the VWM runs byte-for-byte).
+
+        A *fresh* single-target :class:`~src.configs.label_config.LabelConfig`
+        is constructed for ``column`` — inheriting the dataset's own
+        ``id_column`` / ``glm_id_column`` so subject lookup works — and a
+        throwaway :class:`LabelBuilder` is used, so this never mutates the
+        dataset's own ``self._label_builder`` state.
+
+        Parameters
+        ----------
+        column : str
+            Name of the metadata column to extract.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``[num_subjects]``, dtype float, in subject-ID order.
+        """
+        from src.datasets.label_builder import LabelBuilder
+
+        col_cfg = self.label_cfg.model_copy(
+            update={
+                "target": column,
+                "composite_columns": None,
+                "composite_method": None,
+                "composite_params": None,
+            }
+        )
+        builder = LabelBuilder(col_cfg)
+        return builder.build(self._subject_ids, self._metadata)
+
     def get_label_components(self) -> "pd.DataFrame":  # noqa: F821
         """Return raw label component columns for all subjects.
 

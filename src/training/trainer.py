@@ -460,7 +460,11 @@ class Trainer:
         torch.optim.Optimizer
         """
         opt = self.cfg.optimizer.lower()
-        params = self._param_groups if self._param_groups is not None else model.parameters()
+        params = (
+            self._param_groups
+            if self._param_groups is not None
+            else [p for p in model.parameters() if p.requires_grad]
+        )
         if opt == "adam":
             return torch.optim.Adam(params, lr=self.cfg.lr, weight_decay=self.cfg.weight_decay)
         if opt == "adamw":
