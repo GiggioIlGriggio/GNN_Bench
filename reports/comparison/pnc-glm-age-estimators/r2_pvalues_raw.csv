@@ -1,0 +1,4 @@
+model,enet-pnc-glm-age-361341,mlp-pnc-glm-age-fixinput-361347,xgb-pnc-glm-age-361342
+enet-pnc-glm-age-361341,,0.352406,0.205699
+mlp-pnc-glm-age-fixinput-361347,0.352406,,0.108955
+xgb-pnc-glm-age-361342,0.205699,0.108955,

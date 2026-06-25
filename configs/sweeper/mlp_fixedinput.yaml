@@ -1,0 +1,22 @@
+# @package hydra.sweeper
+# MLP Optuna sweeper — input mode PINNED (no model.mlp_input / mlp_adjacency_type sweep).
+#
+# Variant of configs/sweeper/mlp.yaml for a STRICT input control: the inner HPO
+# sweeps only architecture hyperparameters, so it cannot escape the passed
+# model.mlp_input (pass model.mlp_input=node_features to force GLM-only input).
+# Created for Batch 2026-06-12 (GLM→age specificity control): the standard mlp
+# sweeper sweeps model.mlp_input ∈ {node_features, adjacency, both}, and for the
+# age target the HPO escaped to connectivity input — making that cell a
+# connectivity→age measurement, not GLM→age. This variant pins the input so the
+# MLP is a genuine third strict GLM-only estimator alongside ElasticNet/XGBoost.
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 250
+params:
+  model.hidden_dim: choice(32, 64, 128, 256)
+  model.num_layers: choice(2, 3, 4, 5)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
+  model.head_hidden_dim: choice(16, 32, 64, 128)
+  model.head_num_layers: choice(1, 2)
