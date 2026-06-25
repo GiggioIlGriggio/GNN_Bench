@@ -27,6 +27,183 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-24 — identity + glm_diagonal → VWM (protocol-matched mirror of the age run 362508)
+
+**What.** The VWM half of the identity+glm_diagonal investigation (age arm: Batch
+2026-06-23, directly below). The age run showed a clean identity anchor *rescues* the
+multiplicatively-gated `glm_diagonal` carrier from the 0.093 floor to pooled **0.356**,
+because SC topology carries real age signal (`identity`→age = 0.456). VWM is the control
+where **SC topology is useless** (`identity`→VWM ≈ 0; Batch 2026-06-04). **Prediction:**
+with no topology signal to recover, `identity_glm_diagonal`→VWM should land at the GLM
+carrier alone (`glm_diagonal`→VWM ~0.18–0.22) — **no topology bonus from the anchor** —
+the mirror of the age case.
+
+1 nested run (job **362601**), `gpunode03`/rtxa6000, SHA **`755ac5b`** (main at submit),
+wandb project **`age_vwm_transfer`** / entity `teampolpetta`. Smoke (job 362600,
+`COMPLETED 0:0`) validated the path and confirmed the 800-d `[identity(400),
+glm_diagonal(400)]` wiring first — first `GCNConv.lin` = **51,200** params (= 800 × 64).
+
+**Protocol — byte-comparable to the age run 362508.** Identical recipe field-for-field
+**except** `labels=pnc_default → pnc_VWMdprime` and `experiment_name`. Same 940 cohort
+(`pnc_vwm_cohort.txt`), same `source_age_pinned.yaml` search space, same default
+`hpo_metric=val_mae`, **target-stratified** folds (no `stratify_target`) — VWM here, age
+there = the clean mirror.
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all **9,400**
+out-of-fold predictions (940 × 10 reps) vs the global mean. `COMPLETED 0:0` (10h53m);
+pooled recomputed from `checkpoints/idglmdiag-vwm-362601/nested_cv_result.json` matched
+the training-log mean-of-folds (no drift).
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `idglmdiag-vwm` | 362601 | 0.243 ± 0.083 | **0.246** | 0.527 ± 0.050 | 0.478 ± 0.030 | 0.620 ± 0.036 | [qnz1eyc6](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/qnz1eyc6) |
+
+- **Results:** pearson_r 0.527 ± 0.050, r2 0.243 ± 0.083 (mean-of-folds); r2 0.246,
+  pearson_r 0.511 (pooled, N=9,400), mae 0.478 ± 0.030, rmse 0.620 ± 0.036 (50 outer
+  folds). [wandb run](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/qnz1eyc6)
+
+**Paired contrast (the mirror — same 940 PNC cohort, same recipe, only the target differs):**
+
+| target | `identity` (topology) alone | `identity_glm_diagonal` | `glm_diagonal` alone | anchor's topology bonus |
+|---|---|---|---|---|
+| **age** (topology useful) | 0.456 | **0.356** | 0.093 | large — rescues ~+0.26 over the GLM floor |
+| **VWM** (topology useless) | ≈0 | **0.246** | ~0.18–0.22 | ≈none — sits at the GLM carrier |
+
+**Headline.**
+1. **Prediction confirmed — the mirror holds.** `identity_glm_diagonal`→VWM = pooled
+   **0.246** (mean-of-folds 0.243 ± 0.083). The identity anchor adds **no meaningful
+   topology bonus** for VWM: there is no SC-topology signal to recover (`identity`→VWM ≈
+   0), so the 0.246 is carried entirely by the GLM channel — ≈ `glm_diagonal`→VWM
+   (~0.18–0.22, within one fold std). Contrast the age arm, where the same anchor lifts
+   the carrier by ~0.26 (to 0.356) because topology *does* carry age signal.
+2. **The anchor only recovers signal that exists in topology.** This is the clean
+   mechanistic mirror of the first-layer gating story (age batch below): `diag(g)` gates
+   the topology readout via `s ⊙ g`; restoring a clean identity diagonal re-exposes the
+   topology descriptor `s = Âᵀ𝟙` — but that only *helps* when topology is target-relevant.
+   Age: topology has 0.456 of signal → recovered to 0.356. VWM: topology has ≈0 → nothing
+   to recover → the concat just reflects the GLM carrier.
+3. **Consistent with the off-protocol historical id-glmdiag→VWM (0.213, job 360746, Batch
+   2026-05-29).** The protocol-matched 0.246 lands slightly above, as expected from the
+   `hpo_metric` switch (`val_mae` here vs `val_r2` then) + the 940-cohort change; the
+   conclusion is unchanged.
+
+**Caveats.** (i) Single draw; the pipeline is nondeterministic run-to-run (~±0.02–0.03).
+(ii) The `glm_diagonal`→VWM comparator (~0.18–0.22) is on a *different* cohort/protocol,
+so "≈ GLM carrier alone" rests primarily on the in-protocol `identity`→VWM ≈ 0 (no
+topology to add), not on a byte-matched `glm_diagonal`→VWM baseline.
+
+**Command.** `cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J
+idglmdiag-vwm --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=idglmdiag-vwm features=identity_glm_diagonal
+features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_VWMdprime trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer"`.
+
+---
+
+## Batch 2026-06-23 — identity + glm_diagonal → age (does a clean identity anchor rescue the gated GLM carrier?)
+
+**What.** Resolves the puzzle left by [Batch 2026-06-13](#batch-2026-06-13--pnc-agevwm-transfer-leakage-safe-nested-cv-arms-b1b4--a4a5--2-age-sources):
+on the **same SC edges**, `identity`→age = **0.456** but `glm_diagonal`→age = **0.093**
+(`a4_glm_to_age`, age-stratified = 0.106). Both carriers are N×N **diagonal** node
+features (`src/datasets/feature_builder.py:230`/`:371`): identity = `diag(1)`
+(subject-invariant), glm_diagonal = `diag(g)` (subject-varying per-node 2back-vs-0back
+GLM contrast). First-layer mean-pool algebra explains the gap: with mean pooling the
+identity readout reads the SC topology descriptor `s = Âᵀ𝟙` (→ 0.456); the
+glm_diagonal readout reads the **Hadamard mask `s ⊙ g`** — the GLM map
+*multiplicatively gates* the topology, and a GCN has no primitive to divide `g` back
+out, so it collapses to the node-feature floor (~0.10 ≈ GLM→age). **Prediction:**
+concatenating a *clean constant identity anchor* (`features=identity_glm_diagonal` =
+`[identity(400), glm_diagonal(400)]`, 800-d) should restore topology access → pooled
+r² **≈0.45 confirms** the gating story, **≈0.10 falsifies** it.
+
+1 nested run (job **362508**), `gpunode02`/rtx3090, SHA **`755ac5b`** (main), wandb
+project **`age_vwm_transfer`** / entity `teampolpetta`. Smoke (job 362507,
+`COMPLETED 0:0`) validated the path first.
+
+**Cohort.** Shares the **940-subject** allowlist
+(`configs/subject_lists/pnc_vwm_cohort.txt`) so the number is on the *same subjects*
+as `src_age_id` (identity→age), `a4_glm_to_age` (glm→age), and `scprofile_to_age`.
+
+**Recipe.** `features=identity_glm_diagonal features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer`, `--time=2-00:00:00`, default
+`hpo_metric=val_mae`. **Age-stratified** (no `stratify_target`) — mirrors
+`a4_glm_to_age`; the same caveat as `scprofile_to_age` applies (shares the cohort
+with `src_age_id` but **not** byte-for-byte paired folds, since `src_age_id` was
+VWM-stratified).
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all
+**9,400** out-of-fold predictions (940 × 10 reps) vs the global mean. `COMPLETED
+0:0` (18h23m); pooled recomputed from
+`checkpoints/idglmdiag-age-362508/nested_cv_result.json` matched the training-log
+mean-of-folds (no drift).
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `idglmdiag-age` | 362508 | 0.357 ± 0.099 | **0.356** | 0.642 ± 0.049 | 2.050 ± 0.166 | 2.655 ± 0.228 | [62i08npt](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/62i08npt) |
+
+- **Results:** pearson_r 0.642 ± 0.049, r2 0.357 ± 0.099 (mean-of-folds); r2 0.356,
+  pearson_r 0.615 (pooled, N=9,400), mae 2.050 ± 0.166, rmse 2.655 ± 0.228 (50 outer
+  folds). [wandb run](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/62i08npt)
+
+**Comparison (→ age, same 940 PNC cohort):**
+
+| node-feature scheme → age | R² (pooled) | where SC lives | source |
+|---|---|---|---|
+| classical MLP on raw SC (no graph) | ≈0.50 | input vector | Batch 2026-06-11 |
+| identity (one-hot nodes) — `src_age_id` | 0.456 | **edges** | Batch 2026-06-13 |
+| connectivity_profile_sc — `scprofile_to_age` | ~~0.357~~ → **0.445** (corrected, 362627) | node features | Batch 2026-06-23 (scprofile) |
+| **identity + glm_diagonal** (this run) | **0.356** | **edges** + node feat (GLM) | this batch |
+| glm_diagonal — `a4_glm_to_age` | 0.106 | node features (GLM, not SC) | Batch 2026-06-13 |
+
+**Headline.**
+1. **Mechanism confirmed (direction).** The clean identity anchor lifts the GLM
+   carrier from the 0.093/0.106 floor to pooled **0.356** — a ~3.4–3.8× jump, nowhere
+   near the "≈0.10 falsifies" floor. The SC topology was **always extractable** via
+   the edges; `glm_diagonal`-alone collapsed only because `diag(g)` multiplicatively
+   gates the topology readout (`s ⊙ g`), which the GCN cannot invert. A constant
+   identity diagonal restores it. The first-layer algebra holds.
+2. **But concatenation *dilutes* — it does not stack.** 0.356 lands **~0.10 *below***
+   pure identity→age (0.456), missing the "≈0.45 full-recovery" target. The GLM
+   channel *competes with* the topology channel rather than adding its ~0.10 of
+   standalone age signal on top: extra 400 subject-varying, weakly-age-relevant
+   columns + shared first-layer/BatchNorm capacity cost more than they bring.
+3. **The dilution is GLM-channel-specific, not "any dense node feature."**
+   *(Corrected 2026-06-25.)* Originally read as `identity_glm_diagonal` (0.356) ≈
+   `scprofile_to_age` (0.357), both diluting ~0.10 below identity — but the scprofile
+   0.357 was an `lr=0.005` artifact; corrected it is **0.445 ≈ identity 0.456** (job
+   362627, see the scprofile batch). So **only the GLM node-feature channel dilutes**:
+   dumping the *SC row* into node features is neutral vs SC-in-edges (the GCN reads
+   the same topology either way), whereas the per-node GLM-contrast channel genuinely
+   competes with the topology readout (−0.10). SC-in-edges + one-hot nodes remains the
+   strongest scheme; the **GLM channel** — not dense node features per se — is what
+   subtracts. (`idglmdiag` itself is unaffected by the lr bug: it picked `lr=0.005` on
+   24/50 folds with no divergence, group mean +0.336.)
+
+**Caveats.** (i) `src_age_id`'s 0.456 was **VWM-stratified**; this run is
+age-stratified → shares the cohort but not byte-for-byte paired folds. Stratification
+moved glm→age by only +0.013 (a4 0.106 vs src_age_glm 0.093), so the ~0.10 dilution
+gap is real, not a stratification artifact. (ii) Single draw; pipeline is
+nondeterministic run-to-run (~±0.02–0.03). (iii) An *edge-ablated* `glm_diagonal→age`
+(message passing removed → predicts ≈0.10, direct proof "just node features") is the
+natural next control — not yet run.
+
+**Command.** `cluster-submit --node gpunode02 --gpu rtx3090 slurm/train.sh -J
+idglmdiag-age --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=idglmdiag-age features=identity_glm_diagonal
+features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer"`.
+
+---
+
 ## Batch 2026-06-22 — PNC age→PCPT transfer (identity carrier; arms B-fullFT/B-frozen + A3/frozen-random/A5)
 
 **What.** Does an **age-pretrained identity backbone** transfer to **PCPT accuracy**
