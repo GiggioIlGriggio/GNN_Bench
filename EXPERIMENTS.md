@@ -27,6 +27,183 @@ submitted (`DEPLOY_SHA`, `JOB_ID`, wandb URL) and again once it finishes
 
 ---
 
+## Batch 2026-06-24 — identity + glm_diagonal → VWM (protocol-matched mirror of the age run 362508)
+
+**What.** The VWM half of the identity+glm_diagonal investigation (age arm: Batch
+2026-06-23, directly below). The age run showed a clean identity anchor *rescues* the
+multiplicatively-gated `glm_diagonal` carrier from the 0.093 floor to pooled **0.356**,
+because SC topology carries real age signal (`identity`→age = 0.456). VWM is the control
+where **SC topology is useless** (`identity`→VWM ≈ 0; Batch 2026-06-04). **Prediction:**
+with no topology signal to recover, `identity_glm_diagonal`→VWM should land at the GLM
+carrier alone (`glm_diagonal`→VWM ~0.18–0.22) — **no topology bonus from the anchor** —
+the mirror of the age case.
+
+1 nested run (job **362601**), `gpunode03`/rtxa6000, SHA **`755ac5b`** (main at submit),
+wandb project **`age_vwm_transfer`** / entity `teampolpetta`. Smoke (job 362600,
+`COMPLETED 0:0`) validated the path and confirmed the 800-d `[identity(400),
+glm_diagonal(400)]` wiring first — first `GCNConv.lin` = **51,200** params (= 800 × 64).
+
+**Protocol — byte-comparable to the age run 362508.** Identical recipe field-for-field
+**except** `labels=pnc_default → pnc_VWMdprime` and `experiment_name`. Same 940 cohort
+(`pnc_vwm_cohort.txt`), same `source_age_pinned.yaml` search space, same default
+`hpo_metric=val_mae`, **target-stratified** folds (no `stratify_target`) — VWM here, age
+there = the clean mirror.
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all **9,400**
+out-of-fold predictions (940 × 10 reps) vs the global mean. `COMPLETED 0:0` (10h53m);
+pooled recomputed from `checkpoints/idglmdiag-vwm-362601/nested_cv_result.json` matched
+the training-log mean-of-folds (no drift).
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `idglmdiag-vwm` | 362601 | 0.243 ± 0.083 | **0.246** | 0.527 ± 0.050 | 0.478 ± 0.030 | 0.620 ± 0.036 | [qnz1eyc6](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/qnz1eyc6) |
+
+- **Results:** pearson_r 0.527 ± 0.050, r2 0.243 ± 0.083 (mean-of-folds); r2 0.246,
+  pearson_r 0.511 (pooled, N=9,400), mae 0.478 ± 0.030, rmse 0.620 ± 0.036 (50 outer
+  folds). [wandb run](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/qnz1eyc6)
+
+**Paired contrast (the mirror — same 940 PNC cohort, same recipe, only the target differs):**
+
+| target | `identity` (topology) alone | `identity_glm_diagonal` | `glm_diagonal` alone | anchor's topology bonus |
+|---|---|---|---|---|
+| **age** (topology useful) | 0.456 | **0.356** | 0.093 | large — rescues ~+0.26 over the GLM floor |
+| **VWM** (topology useless) | ≈0 | **0.246** | ~0.18–0.22 | ≈none — sits at the GLM carrier |
+
+**Headline.**
+1. **Prediction confirmed — the mirror holds.** `identity_glm_diagonal`→VWM = pooled
+   **0.246** (mean-of-folds 0.243 ± 0.083). The identity anchor adds **no meaningful
+   topology bonus** for VWM: there is no SC-topology signal to recover (`identity`→VWM ≈
+   0), so the 0.246 is carried entirely by the GLM channel — ≈ `glm_diagonal`→VWM
+   (~0.18–0.22, within one fold std). Contrast the age arm, where the same anchor lifts
+   the carrier by ~0.26 (to 0.356) because topology *does* carry age signal.
+2. **The anchor only recovers signal that exists in topology.** This is the clean
+   mechanistic mirror of the first-layer gating story (age batch below): `diag(g)` gates
+   the topology readout via `s ⊙ g`; restoring a clean identity diagonal re-exposes the
+   topology descriptor `s = Âᵀ𝟙` — but that only *helps* when topology is target-relevant.
+   Age: topology has 0.456 of signal → recovered to 0.356. VWM: topology has ≈0 → nothing
+   to recover → the concat just reflects the GLM carrier.
+3. **Consistent with the off-protocol historical id-glmdiag→VWM (0.213, job 360746, Batch
+   2026-05-29).** The protocol-matched 0.246 lands slightly above, as expected from the
+   `hpo_metric` switch (`val_mae` here vs `val_r2` then) + the 940-cohort change; the
+   conclusion is unchanged.
+
+**Caveats.** (i) Single draw; the pipeline is nondeterministic run-to-run (~±0.02–0.03).
+(ii) The `glm_diagonal`→VWM comparator (~0.18–0.22) is on a *different* cohort/protocol,
+so "≈ GLM carrier alone" rests primarily on the in-protocol `identity`→VWM ≈ 0 (no
+topology to add), not on a byte-matched `glm_diagonal`→VWM baseline.
+
+**Command.** `cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J
+idglmdiag-vwm --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=idglmdiag-vwm features=identity_glm_diagonal
+features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_VWMdprime trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer"`.
+
+---
+
+## Batch 2026-06-23 — identity + glm_diagonal → age (does a clean identity anchor rescue the gated GLM carrier?)
+
+**What.** Resolves the puzzle left by [Batch 2026-06-13](#batch-2026-06-13--pnc-agevwm-transfer-leakage-safe-nested-cv-arms-b1b4--a4a5--2-age-sources):
+on the **same SC edges**, `identity`→age = **0.456** but `glm_diagonal`→age = **0.093**
+(`a4_glm_to_age`, age-stratified = 0.106). Both carriers are N×N **diagonal** node
+features (`src/datasets/feature_builder.py:230`/`:371`): identity = `diag(1)`
+(subject-invariant), glm_diagonal = `diag(g)` (subject-varying per-node 2back-vs-0back
+GLM contrast). First-layer mean-pool algebra explains the gap: with mean pooling the
+identity readout reads the SC topology descriptor `s = Âᵀ𝟙` (→ 0.456); the
+glm_diagonal readout reads the **Hadamard mask `s ⊙ g`** — the GLM map
+*multiplicatively gates* the topology, and a GCN has no primitive to divide `g` back
+out, so it collapses to the node-feature floor (~0.10 ≈ GLM→age). **Prediction:**
+concatenating a *clean constant identity anchor* (`features=identity_glm_diagonal` =
+`[identity(400), glm_diagonal(400)]`, 800-d) should restore topology access → pooled
+r² **≈0.45 confirms** the gating story, **≈0.10 falsifies** it.
+
+1 nested run (job **362508**), `gpunode02`/rtx3090, SHA **`755ac5b`** (main), wandb
+project **`age_vwm_transfer`** / entity `teampolpetta`. Smoke (job 362507,
+`COMPLETED 0:0`) validated the path first.
+
+**Cohort.** Shares the **940-subject** allowlist
+(`configs/subject_lists/pnc_vwm_cohort.txt`) so the number is on the *same subjects*
+as `src_age_id` (identity→age), `a4_glm_to_age` (glm→age), and `scprofile_to_age`.
+
+**Recipe.** `features=identity_glm_diagonal features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer`, `--time=2-00:00:00`, default
+`hpo_metric=val_mae`. **Age-stratified** (no `stratify_target`) — mirrors
+`a4_glm_to_age`; the same caveat as `scprofile_to_age` applies (shares the cohort
+with `src_age_id` but **not** byte-for-byte paired folds, since `src_age_id` was
+VWM-stratified).
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all
+**9,400** out-of-fold predictions (940 × 10 reps) vs the global mean. `COMPLETED
+0:0` (18h23m); pooled recomputed from
+`checkpoints/idglmdiag-age-362508/nested_cv_result.json` matched the training-log
+mean-of-folds (no drift).
+
+| experiment_name | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|
+| `idglmdiag-age` | 362508 | 0.357 ± 0.099 | **0.356** | 0.642 ± 0.049 | 2.050 ± 0.166 | 2.655 ± 0.228 | [62i08npt](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/62i08npt) |
+
+- **Results:** pearson_r 0.642 ± 0.049, r2 0.357 ± 0.099 (mean-of-folds); r2 0.356,
+  pearson_r 0.615 (pooled, N=9,400), mae 2.050 ± 0.166, rmse 2.655 ± 0.228 (50 outer
+  folds). [wandb run](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/62i08npt)
+
+**Comparison (→ age, same 940 PNC cohort):**
+
+| node-feature scheme → age | R² (pooled) | where SC lives | source |
+|---|---|---|---|
+| classical MLP on raw SC (no graph) | ≈0.50 | input vector | Batch 2026-06-11 |
+| identity (one-hot nodes) — `src_age_id` | 0.456 | **edges** | Batch 2026-06-13 |
+| connectivity_profile_sc — `scprofile_to_age` | ~~0.357~~ → **0.445** (corrected, 362627) | node features | Batch 2026-06-23 (scprofile) |
+| **identity + glm_diagonal** (this run) | **0.356** | **edges** + node feat (GLM) | this batch |
+| glm_diagonal — `a4_glm_to_age` | 0.106 | node features (GLM, not SC) | Batch 2026-06-13 |
+
+**Headline.**
+1. **Mechanism confirmed (direction).** The clean identity anchor lifts the GLM
+   carrier from the 0.093/0.106 floor to pooled **0.356** — a ~3.4–3.8× jump, nowhere
+   near the "≈0.10 falsifies" floor. The SC topology was **always extractable** via
+   the edges; `glm_diagonal`-alone collapsed only because `diag(g)` multiplicatively
+   gates the topology readout (`s ⊙ g`), which the GCN cannot invert. A constant
+   identity diagonal restores it. The first-layer algebra holds.
+2. **But concatenation *dilutes* — it does not stack.** 0.356 lands **~0.10 *below***
+   pure identity→age (0.456), missing the "≈0.45 full-recovery" target. The GLM
+   channel *competes with* the topology channel rather than adding its ~0.10 of
+   standalone age signal on top: extra 400 subject-varying, weakly-age-relevant
+   columns + shared first-layer/BatchNorm capacity cost more than they bring.
+3. **The dilution is GLM-channel-specific, not "any dense node feature."**
+   *(Corrected 2026-06-25.)* Originally read as `identity_glm_diagonal` (0.356) ≈
+   `scprofile_to_age` (0.357), both diluting ~0.10 below identity — but the scprofile
+   0.357 was an `lr=0.005` artifact; corrected it is **0.445 ≈ identity 0.456** (job
+   362627, see the scprofile batch). So **only the GLM node-feature channel dilutes**:
+   dumping the *SC row* into node features is neutral vs SC-in-edges (the GCN reads
+   the same topology either way), whereas the per-node GLM-contrast channel genuinely
+   competes with the topology readout (−0.10). SC-in-edges + one-hot nodes remains the
+   strongest scheme; the **GLM channel** — not dense node features per se — is what
+   subtracts. (`idglmdiag` itself is unaffected by the lr bug: it picked `lr=0.005` on
+   24/50 folds with no divergence, group mean +0.336.)
+
+**Caveats.** (i) `src_age_id`'s 0.456 was **VWM-stratified**; this run is
+age-stratified → shares the cohort but not byte-for-byte paired folds. Stratification
+moved glm→age by only +0.013 (a4 0.106 vs src_age_glm 0.093), so the ~0.10 dilution
+gap is real, not a stratification artifact. (ii) Single draw; pipeline is
+nondeterministic run-to-run (~±0.02–0.03). (iii) An *edge-ablated* `glm_diagonal→age`
+(message passing removed → predicts ≈0.10, direct proof "just node features") is the
+natural next control — not yet run.
+
+**Command.** `cluster-submit --node gpunode02 --gpu rtx3090 slurm/train.sh -J
+idglmdiag-age --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=idglmdiag-age features=identity_glm_diagonal
+features.glm_normalize=true dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer"`.
+
+---
+
 ## Batch 2026-06-23 — connectivity-profile-SC → age (SC row AS node features)
 
 **What.** Does pushing the **SC connectivity row into the node features**
@@ -124,6 +301,132 @@ trainer.epochs=300 logging.project=age_vwm_transfer"` — identical to the origi
 (commit `0b3c773`). **Avoid gpunode01** (it silently accepted-but-never-scheduled an
 earlier smoke); `cluster-tail` blocks on a missing log here, so use `cluster-fetch`
 for logs.
+
+---
+
+## Batch 2026-06-22 — PNC age→PCPT transfer (identity carrier; arms B-fullFT/B-frozen + A3/frozen-random/A5)
+
+**What.** Does an **age-pretrained identity backbone** transfer to **PCPT accuracy**
+(`PCPT_precision`) on PNC, under the same leakage-safe nested-CV transfer protocol as
+the age→VWM batch (per-outer-fold backbone injection + a fail-closed fold-alignment
+guard; infra PRs **#37 + #38**)? One **identity** age "source" backbone (job 362451)
+is pretrained, then loaded into PCPT runs as either a full fine-tune (`from_age_ft`)
+or a frozen backbone + fresh head (`from_age_frozen`). PCPT is **~5× more age-coupled
+than VWM** (corr(age,PCPT)=0.533 ⇒ closed-form age floor **r²=0.284** vs VWM's 0.057),
+so the controls are load-bearing: **A3** from-scratch, **frozen-random** (random frozen
+backbone, no checkpoint) and **A5** (closed-form age floor). Sibling of Batch
+2026-06-13 (age→VWM); single identity carrier (no GLM arm).
+
+5 nested runs (jobs **362451–362455**), `gpunode02`/`rtx6000`, SHA **`f6d8c4f`**
+(feature/age-pcpt-transfer), wandb project **`age_pcpt_transfer`** / entity
+`teampolpetta`.
+
+**Cohort (critical).** All arms share ONE **937-subject** TRITASK allowlist (graph ∩
+non-NaN VWM ∩ non-NaN PCPT ∩ GLM map = VWM-940 − 3), generated **on the cluster**
+(`slurm/make_cohort.sh` with the `also_require=pnc_PCPT_accuracy` 4th positional).
+Identical subject set + PCPT-stratified outer folds across the source and every PCPT
+arm → the `SourceBackboneProvider` guard passes (no `fold-index mismatch`). The source
+stratifies via `stratify_target=PCPT_precision` (target stays age); the PCPT arms
+stratify on their own target by default.
+
+**Cluster CSV gotcha.** On the cluster `Tabular_data/PNC_ALL_SCORES.csv` lacks
+`PCPT_precision` (only `…_PCPT.csv` has it; identical on the laptop, NOT on the
+cluster). So the age source uses **`labels=pnc_age_pcptcsv`** (age target, PCPT
+metadata) — *not* `pnc_default`, which `KeyError`s on the stratify column — and the
+PCPT arms use `labels=pnc_PCPT_accuracy`. (See [cluster_pcpt_csv_split].)
+
+**Shared recipe.** `dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_tritask_cohort.txt model=gcn
+features=identity trainer.n_repetitions=10 trainer.n_outer_folds=5
+trainer.inner_hpo_trials=20 trainer.epochs=300 logging.project=age_pcpt_transfer`,
+default `hpo_metric=val_mae`, wandb entity `teampolpetta`.
+- **Source / A3:** `trainer.search_space=configs/sweeper/source_age_pinned.yaml`.
+  Source adds `labels=pnc_age_pcptcsv stratify_target=PCPT_precision`; A3 is
+  `labels=pnc_PCPT_accuracy transfer=none` (from scratch, same cohort + stratification).
+- **B-arms / frozen-random:** `labels=pnc_PCPT_accuracy
+  trainer.search_space=configs/sweeper/transfer_finetune.yaml` (lr grid
+  1e-4/5e-4/1e-3 — **5e-3 dropped**; it diverged the identity full-FT in the VWM
+  batch, see [age_vwm_transfer_dynamics]). B-arms add `transfer=<from_age_ft|from_age_frozen>
+  transfer.source_checkpoint_root=checkpoints/src_age_id_pcpt-362451`; frozen-random
+  is `transfer=frozen_random` (random frozen backbone, no checkpoint).
+
+| arm | experiment_name | Job | transfer | source ckpt | frozen |
+|---|---|---|---|---|---|
+| B-fullFT | `b_fullft_pcpt` | 362452 | from_age_ft | src_age_id_pcpt-362451 | `[]` |
+| B-frozen | `b_frozen_pcpt` | 362453 | from_age_frozen | src_age_id_pcpt-362451 | `['backbone']` |
+| frozen-random | `frozen_random_pcpt` | 362454 | frozen_random | — (random) | `['backbone']` |
+| A3 | `a3_scratch_pcpt` | 362455 | none | — | — |
+| src | `src_age_id_pcpt` | 362451 | — (writes ckpt) | — | — |
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all **9,370**
+out-of-fold predictions (937 subjects × 10 reps) vs the global mean → effective
+**N=937**. `±` = dispersion across (correlated) folds, **not** a standard error. All 5
+`COMPLETED 0:0`; each pooled run's recomputed mean-of-folds r² matched its
+training-log value (no drift). Recovered from per-run
+`checkpoints/<name>-<jobid>/nested_cv_result.json` (ADR-0012) + wandb (project
+**`age_pcpt_transfer`**, *not* the `.cluster-helper.yaml` default `orbitglm` — see
+[wandb_project_default_drift]).
+
+*Transfer arms + controls → PCPT* (sorted by r²):
+
+| arm | mode | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| **B-frozen** | age-id / frozen | 362453 | **0.154 ± 0.058** | **0.151** | 0.407 ± 0.067 | 0.080 ± 0.004 | 0.110 ± 0.012 | [gxg66rlo](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/gxg66rlo) |
+| **B-fullFT** | age-id / full-FT | 362452 | 0.103 ± 0.107 | 0.101 | 0.394 ± 0.082 | 0.081 ± 0.005 | 0.113 ± 0.013 | [ywie9skh](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/ywie9skh) |
+| frozen-random | random / frozen | 362454 | 0.058 ± 0.051 | 0.058 | 0.282 ± 0.078 | 0.084 ± 0.004 | 0.116 ± 0.011 | [7cshnaq7](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/7cshnaq7) |
+| A3 | from scratch | 362455 | −0.065 ± 0.595 | −0.053 | 0.361 ± 0.084 | 0.088 ± 0.024 | 0.120 ± 0.026 | [bni3jjbj](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/bni3jjbj) |
+| *A5* | age only, no graph | — | — | **0.284** | 0.533 | — | — | closed-form |
+
+*Age source* (target = age, years):
+
+| run | desc | Job | R² (mean-of-folds) | R² (pooled) | Pearson r | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| `src_age_id_pcpt` | identity→age (source for B-arms), PCPT-stratified | 362451 | 0.481 ± 0.152 | 0.482 | 0.755 ± 0.035 | 1.806 ± 0.297 | 2.362 ± 0.336 | [reazqw8x](https://wandb.ai/teampolpetta/age_pcpt_transfer/runs/reazqw8x) |
+
+**Corrected significance (ADR-0008).** Bouckaert–Frank corrected resampled paired
+t-test on per-outer-fold r² (`src/training/statistical_tests.py`, the
+`scripts/compare_models.py` test; BH across all 6 pairs of the 4 PCPT arms; folds are
+shared — same cohort + PCPT stratification):
+
+| A | B | Δr² (A−B) | p_raw | q (BH) | sig |
+|---|---|---|---|---|---|
+| B-frozen | frozen-random | +0.096 | 0.0003 | **0.002** | **yes** |
+| B-frozen | B-fullFT | +0.051 | 0.246 | 0.691 | n.s. |
+| B-frozen | A3 | +0.219 | 0.484 | 0.691 | n.s. |
+| B-fullFT | frozen-random | +0.045 | 0.382 | 0.691 | n.s. |
+| B-fullFT | A3 | +0.168 | 0.598 | 0.691 | n.s. |
+| frozen-random | A3 | +0.123 | 0.691 | 0.691 | n.s. |
+
+Only **B-frozen > frozen-random** survives correction (q=0.002). Contrasts against A3
+carry large Δr² but stay n.s. — A3's per-fold r² std is **0.595** (from-scratch
+identity diverges on some folds, like B1 in the VWM batch), which destroys the power
+of any A3 contrast.
+
+**Headline.**
+1. **The age-pretrained backbone carries PCPT signal beyond a random projection.**
+   B-frozen (pooled **0.151**) significantly beats frozen-random (0.058; q=0.002, the
+   only surviving contrast) — the age *training*, not just any random frozen
+   projection, encodes PCPT-relevant structure (head-only, backbone untouched).
+2. **…but it does NOT beat chronological age.** Every transfer arm sits **below** the
+   A5 age floor (B-frozen 0.151, B-fullFT 0.101 vs **0.284** pooled). Unlike age→VWM
+   (where the frozen GLM backbone beat its 0.057 floor ~2×), PCPT's ~5× higher
+   age-coupling means a closed-form age regression outpredicts the transferred GNN
+   representation. The backbone carries *age-correlated* PCPT variance — less
+   efficiently than age itself.
+3. **Frozen > full-FT (point estimate); neither beats scratch significantly.**
+   Ordering B-frozen (0.151) > B-fullFT (0.101) > frozen-random (0.058) > A3 (−0.053),
+   but no contrast among {B-frozen, B-fullFT, A3} survives correction — A3's fold
+   instability (std 0.595) under-powers the transfer-vs-scratch test. Consistent with
+   the VWM batch: full fine-tuning the identity backbone is unstable and shows no
+   transfer bonus over frozen.
+
+**Caveats.** (i) A3 (from-scratch identity) has extreme fold variance (r² std 0.595 —
+diverges on some folds), so transfer-vs-scratch contrasts are descriptive, not
+powered. (ii) B-vs-A5 is descriptive (A5 is closed-form, no per-fold array). (iii)
+Frozen / random-frozen arms ran *longer* than full-FT (frozen ~12h, frozen-random
+~23h vs full-FT ~8h) — head-only converges slower / early-stops less (as in the VWM
+batch). (iv) Nondeterminism unaddressed (single draw per arm). (v) A5=0.284 computed
+on the 937 cohort (corr +0.533); not recomputed byte-exact on the cluster split.
 
 ---
 
@@ -249,6 +552,98 @@ B-arm-vs-B-arm; B-vs-A5 is descriptive (A5 is closed-form, no per-fold array —
 B4-vs-floor qualitatively). (iii) Frozen arms (B2/B4) ran *longer* than full-FT
 (14–15h vs 9–10h) — head-only converges slower / early-stops less. (iv) Nondeterminism
 unaddressed (single draw per arm), as in prior batches.
+
+---
+
+## Batch 2026-06-12 — GLM→age specificity control (does the GLM-activation vector predict age?)
+
+**Goal.** Specificity control for the 2026-06-11 headline (PNC VWM best predicted by
+the 400-dim `glm_scalar` activation vector, pooled r²≈0.23–0.25, beating connectivity
+≈0.10–0.12). The GLM vector was never used to predict **age** — so we cannot tell if
+it carries *VWM-specific* signal or is a generic developmental / SNR / engagement
+proxy that predicts everything. PNC is an 8–21yo sample where connectivity predicts
+age strongly (SC r²≈0.51, FC≈0.33), so a non-trivial GLM→age is plausible. These
+cells predict `age_at_cnb` from `glm_scalar`, read against the grid: **GLM→age ≈0** ⇒
+strong VWM-specificity (strengthens the headline); **moderate but <0.24** ⇒ partial
+confound; **≈ or >0.24** ⇒ the GLM vector is a generic maturation/quality proxy and
+the VWM result is not specific. Report `reports/2026-06-12-glm-age-specificity-control.md`.
+
+**Design.** Identical to the 2026-06-11 PNC GLM→VWM cells except `labels=pnc_default`
+(target `age_at_cnb`) replaces `labels=pnc_VWMdprime`. **No pipeline code changes**
+(one config added — the pinned-input sweeper variant, below). `enet` + `xgb` are the
+strict control (their sweepers do not touch `model.mlp_input`; input pinned to
+`node_features`). The standard `mlp` sweeper **does** sweep
+`mlp_input ∈ {node_features, adjacency, both}`, and for the age target the inner HPO
+**escaped to connectivity input — GLM-only in 0/50 folds** → the sweeping
+`mlp-pnc-glm-age` measures connectivity→age (pooled 0.573 ≈ the existing
+`mlp-pnc-sc-age` 0.521), **not** GLM→age. So a 4th cell, **`mlp-pnc-glm-age-fixinput`**
+(sweeper `configs/sweeper/mlp_fixedinput.yaml` = mlp sweeper minus the
+`mlp_input`/`mlp_adjacency_type` dims, + `model.mlp_input=node_features`), pins the
+input → a genuine 3rd strict GLM-only estimator. N = **945** subjects (993 − 48
+`glm_missing`; age non-null for all) — a **+5 superset** of the 940 GLM→VWM subjects,
+so GLM→age folds are **not** byte-identical to GLM→VWM → cross-target comparison is
+**magnitude-only**; within-target 3-estimator comparison (the 3 strict cells) is valid
+(shared N=945 / 50 folds, seeds 42–51).
+
+**Shared recipe.** 10 reps × 5 outer folds × 20 inner Optuna trials, maximize
+`val_r2`; project `baselines`, entity `teampolpetta`; branch
+`feature/glm-age-specificity-control` @ `6634879`; submitted 2026-06-12. sklearn
+(enet/xgb) → CPU (`slurm/train_sklearn.sh`, already sets `logging.project=baselines`);
+MLP → GPU (`slurm/train.sh`, epochs=300; pass `logging.project=baselines` to override
+the script's `"Baseline Launches"` default).
+
+Strict GLM-only cells (the genuine GLM→age controls) first; the input-escaped sweeping
+MLP last (annotated — its 0.573 is connectivity→age, not GLM→age, so a naive r²-sort
+would mislead).
+
+| experiment_name | model | compute | DEPLOY_SHA | Job ID | wandb | r² (mean-of-folds) | r² (pooled) |
+|---|---|---|---|---|---|---|---|
+| `enet-pnc-glm-age` | ElasticNet | node01 (CPU) | `6634879` | 361341 | [an1jtxae](https://wandb.ai/teampolpetta/baselines/runs/an1jtxae) | 0.074 ± 0.040 | **0.075** |
+| `xgb-pnc-glm-age`  | XGBoost    | node02 (CPU) | `6634879` | 361342 | [8c51zkuu](https://wandb.ai/teampolpetta/baselines/runs/8c51zkuu) | 0.106 ± 0.046 | **0.106** |
+| `mlp-pnc-glm-age-fixinput` | MLP (input **pinned**, GLM-only) | gpunode03/rtxa6000 | `48e5d3d` | 361347 | [a0hgujtf](https://wandb.ai/teampolpetta/baselines/runs/a0hgujtf) | 0.040 ± 0.081 | **0.041** |
+| `mlp-pnc-glm-age`  | MLP (HPO **escaped → connectivity**; *not* GLM→age) | gpunode01/rtx2080 | `6634879` | 361343 | [953nb607](https://wandb.ai/teampolpetta/baselines/runs/953nb607) | 0.574 ± 0.056 | 0.573 |
+
+**Commands** (RUN_ARGS forwarded inline; only the delta from the shared recipe shown
+in prose above — the full lines):
+```
+cluster-submit --node node01 slurm/train_sklearn.sh -J enet-pnc-glm-age \
+ "--export=ALL,RUN_ARGS=experiment_name=enet-pnc-glm-age dataset=pnc model=elasticnet \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/elasticnet.yaml"
+# xgb: swap model=xgboost, search_space=configs/sweeper/xgboost.yaml, --node node02, -J xgb-pnc-glm-age
+cluster-submit --node gpunode01 --gpu rtx2080 slurm/train.sh -J mlp-pnc-glm-age \
+ "--export=ALL,RUN_ARGS=experiment_name=mlp-pnc-glm-age dataset=pnc model=mlp \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features logging.project=baselines \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.epochs=300 trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/mlp.yaml"
+# pinned-input MLP (3rd strict estimator), DEPLOY_SHA 48e5d3d:
+cluster-submit --node gpunode03 --gpu rtxa6000 slurm/train.sh -J mlp-pnc-glm-age-fixinput \
+ "--export=ALL,RUN_ARGS=experiment_name=mlp-pnc-glm-age-fixinput dataset=pnc model=mlp \
+  features=glm_scalar labels=pnc_default model.mlp_input=node_features logging.project=baselines \
+  trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20 \
+  trainer.epochs=300 trainer.hpo_metric=val_r2 trainer.search_space=configs/sweeper/mlp_fixedinput.yaml"
+```
+
+**Reference magnitudes** (2026-06-11 batch, same N≈940 GLM input): GLM→VWM pooled r² —
+enet **0.246** / mlp 0.230 / xgb 0.226; connectivity→age — SC ≈0.50–0.52, FC ≈0.32–0.37.
+
+**Smoke gate.** All passed at `n_repetitions=1 n_outer_folds=2 inner_hpo_trials=2`
+(`COMPLETED 0:0`; jobs 361338–361340, + pinned-MLP smoke 361346): RUN_ARGS echoed,
+target `age_at_cnb`, N=945.
+
+**Results.** Strict GLM-only estimators (the genuine GLM→age controls): pooled r²
+**0.075** (enet) / **0.106** (xgb) / **0.041** (pinned MLP); mean-of-folds 0.074±0.040 /
+0.106±0.046 / 0.040±0.081 (N=9450 pooled = 945×10; ± = fold dispersion, not SE). All
+three **statistically indistinguishable** — corrected resampled paired t-test on `r2`,
+all pairs p_adj ≥ 0.31 (`reports/comparison/pnc-glm-age-estimators/`). The sweeping
+`mlp-pnc-glm-age` (0.573 pooled) is **connectivity→age via HPO input-escape** (`both`
+27 / `adjacency` 23 / GLM-only **0** of 50 folds), not a GLM→age number — reported as a
+positive control only. **Verdict:** GLM→age ≈0.04–0.11 ≪ GLM→VWM ≈0.23–0.25 (same
+vector; 2–6×) ≪ connectivity→age ≈0.51 SC (~5–12×) → the GLM activation pattern is
+substantially **VWM-specific**, not a generic maturation/quality proxy; the residual
+age signal is small but non-zero (partial confound). Full write-up + interpretation
+grid: `reports/2026-06-12-glm-age-specificity-control.md`.
 
 ---
 

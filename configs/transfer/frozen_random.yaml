@@ -1,0 +1,11 @@
+# Frozen-random control (age-pretraining specificity).
+# Freeze a RANDOMLY-INITIALISED backbone (no source checkpoint), train only the
+# head. enabled=false => run_experiment builds NO SourceBackboneProvider; the
+# non-empty frozen_layers triggers the freeze-only path in NestedCrossValidator
+# (_wrap_factory_for_fold). Pin the SAME architecture as the source so the only
+# difference vs from_age_frozen is trained-vs-random backbone weights.
+enabled: false
+source_checkpoint_root: null
+checkpoint_variant: best
+frozen_layers:
+  - backbone

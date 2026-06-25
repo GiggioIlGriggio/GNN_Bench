@@ -80,6 +80,22 @@ def select_runner(*, is_sweep: bool, finetuning_enabled: bool, runner: str | Non
     return "nested"
 
 
+def require_nested_for_transfer(*, transfer_enabled: bool, frozen_layers, runner: str) -> None:
+    """Fail loud if backbone manipulation is requested outside the nested runner.
+
+    Both source-checkpoint transfer (``transfer.enabled``) and the frozen-random
+    control (``transfer.frozen_layers`` non-empty with no source) only take effect
+    inside the nested-CV route; any other runner would silently train from scratch.
+    """
+    if (transfer_enabled or bool(frozen_layers)) and runner != "nested":
+        raise ValueError(
+            f"transfer / frozen backbone requires the nested runner (runner=nested), "
+            f"but the resolved runner is {runner!r}. The age-pretrained (or frozen-random) "
+            "backbone is only applied in the nested-CV route — any other runner would "
+            "silently train from scratch. Set runner=nested or transfer=none."
+        )
+
+
 def run_sklearn(
     *, model_cfg, trainer_cfg, graphs, labels, logger, run_name,
     glm_col_range, glm_normalize, label_builder, label_components, feature_config,
@@ -387,13 +403,11 @@ def main(cfg: DictConfig) -> None:
     )
     log.info("Runner selected: %s", runner)
 
-    if transfer_cfg.enabled and runner != "nested":
-        raise ValueError(
-            f"transfer.enabled=true requires the nested runner (runner=nested), but "
-            f"the resolved runner is {runner!r}. The age-pretrained backbone is only "
-            "injected in the nested-CV route — any other runner would silently train "
-            "from scratch. Set runner=nested or transfer=none."
-        )
+    require_nested_for_transfer(
+        transfer_enabled=transfer_cfg.enabled,
+        frozen_layers=transfer_cfg.frozen_layers,
+        runner=runner,
+    )
 
     if runner == "sweep":
         from src.sweeps.hydra_sweep import HydraSweep
