@@ -100,6 +100,20 @@ representation+model comparison, not a pure architecture swap. There is no exist
 GNN run on plain connectivity or on `glm_scalar` to make the swap purer; the GNN
 batches were all GLM-node-feature studies.)
 
+**Specificity control (2026-06-12 follow-up).** Does the `glm_scalar` vector predict
+**age** too — i.e. is its VWM signal generic maturation/quality rather than WM-specific?
+**No.** Strict GLM-only estimators give GLM→age pooled r² 0.075 (ElasticNet) / 0.106
+(XGBoost) / 0.041 (pinned-input MLP) — **2–6× below** GLM→VWM (0.23–0.25, the *same*
+vector) and **~5–12× below** connectivity→age (SC 0.51). The GLM activation pattern is
+substantially **VWM-specific**, not a generic brain-maturation proxy; the residual age
+signal is small but non-zero (partial confound). *Caveat made concrete here:* the MLP
+GLM cells use **HPO-selected input** (the `mlp` sweeper sweeps `mlp_input`) — for **age**
+the HPO escapes to connectivity (the sweeping `mlp-pnc-glm-age` recovers ~0.57 ≈
+connectivity→age, GLM-only in 0/50 folds), so a **pinned-input** MLP is the valid GLM-only
+estimator; for **VWM** it kept GLM input, so `mlp-pnc-glm-vwm` above is unaffected. Detail:
+[`reports/2026-06-12-glm-age-specificity-control.md`](2026-06-12-glm-age-specificity-control.md)
+· [EXPERIMENTS.md Batch 2026-06-12](../EXPERIMENTS.md#batch-2026-06-12--glmage-specificity-control-does-the-glm-activation-vector-predict-age).
+
 ## 4. Estimators are interchangeable
 
 Within a cell (identical folds), the three classical estimators never differ
