@@ -2,13 +2,19 @@
 # Source age pretraining: pin the backbone architecture so EVERY fold's refit
 # checkpoint shares one shape (transfer requires identical backbone dims).
 # Only optimiser + head vary during the source run's own HPO.
+# lr=0.005 dropped (was: choice(..., 0.005)): on dense node features (e.g.
+# connectivity_profile_sc) it drives a divergent/scale-collapse refit on a
+# minority of folds — predictions go low-biased + variance-compressed while
+# ranking (Pearson) is preserved, so r2 blows sharply negative (scprofile_to_age
+# job 362510: 6/6 lr=0.005 folds, fold mean r2 -0.53, min -2.48; pooled r2
+# 0.357->0.477 once removed). Mirrors the transfer-sweeper fix (commit 80e61ac).
 sampler:
   _target_: optuna.samplers.TPESampler
   seed: 42
 direction: maximize
 n_trials: 20
 params:
-  trainer.lr: choice(0.0001, 0.0005, 0.001, 0.005)
+  trainer.lr: choice(0.0001, 0.0005, 0.001)
   trainer.weight_decay: choice(0.0, 0.0001, 0.001, 0.01)
   model.dropout: choice(0.0, 0.1, 0.2, 0.3)
   model.head_hidden_dim: choice(16, 32, 64, 128)

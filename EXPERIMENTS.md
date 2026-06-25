@@ -204,6 +204,106 @@ trainer.epochs=300 logging.project=age_vwm_transfer"`.
 
 ---
 
+## Batch 2026-06-23 — connectivity-profile-SC → age (SC row AS node features)
+
+**What.** Does pushing the **SC connectivity row into the node features**
+(`features=connectivity_profile_sc`: each node = its row of the N×N SC matrix) help
+predict **age** through a GCN, versus the existing GNN baseline where SC is carried
+only in the **edges** with one-hot node identity (`src_age_id`, identity→age =
+0.456, [Batch 2026-06-13](#batch-2026-06-13--pnc-agevwm-transfer-leakage-safe-nested-cv-arms-b1b4--a4a5--2-age-sources))?
+A standalone, age-stratified control on the shared 940-subject PNC cohort. The VWM
+node-feature matrices found the `scprofile` carrier the *weakest*; this asks the
+same on age, where connectivity is strongly age-predictive (classical SC→age ≈0.50,
+[Batch 2026-06-11](#batch-2026-06-11--classical-ml-baselines-xgboost--elasticnet--mlp-vs-the-gnn-30-run-matrix)).
+
+1 nested run (job **362510**), `gpunode02`/rtx6000, SHA **`755ac5b`** (main), wandb
+project **`age_vwm_transfer`** / entity `teampolpetta`. Smoke (job 362509,
+`COMPLETED 0:0`) validated the path first.
+
+> **⚠ Corrected 2026-06-25 — the original 362510 number was an `lr=0.005` sweep
+> artifact; use the 362627 numbers below.** `source_age_pinned.yaml` offered
+> `trainer.lr=0.005`, which on the *dense 400-d* `connectivity_profile_sc` node
+> features drives a scale-collapse / divergent refit: the **6/50** folds that picked
+> it went low-biased + variance-compressed (Pearson preserved 0.57–0.69, but r²
+> −2.48…+0.05, group mean **−0.53**), dragging the whole run down. Dropping `0.005`
+> from the source sweep (commit `0b3c773`; mirrors the transfer-sweeper fix
+> `80e61ac`) and re-running (**job 362627**, `gpunode02`/rtx3090, branch
+> `feature/backfill-scprofile-age`) removes it: pooled r² **0.357 → 0.445**, fold-SD
+> **0.513 → 0.199**, worst fold **−2.48 → −0.29**, **0** folds at `lr=0.005`. The
+> divergence is **feature-specific** — identity (`src_age_id`, 4/50 folds) and
+> `identity_glm_diagonal` (362508, 24/50 folds) both picked `0.005` with **no**
+> divergence; only the dense raw-SC rows are sensitive.
+
+**Cohort.** Shares the **940-subject** allowlist
+(`configs/subject_lists/pnc_vwm_cohort.txt`, the age→VWM-transfer cohort) so the
+number is on the *same subjects* as `src_age_id` (identity→age) and `a4_glm_to_age`
+(glm→age). `connectivity_profile_sc` uses no GLM map (`glm_contrasts: []`), so the
+cohort's GLM constraint is irrelevant here.
+
+**Recipe.** `features=connectivity_profile_sc dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer`, `--time=2-00:00:00`, default
+`hpo_metric=val_mae`. **Age-stratified** (no `stratify_target`) — a standalone age
+estimate, unlike `src_age_id` which was VWM-stratified to align with the transfer
+arms (so the contrast below shares the cohort but **not** byte-for-byte paired folds).
+
+**Results.** N=50 outer folds (10 reps × 5 folds); pooled = one r² over all
+**9,400** out-of-fold predictions (940 × 10 reps) vs the global mean. Both runs
+`COMPLETED 0:0`; pooled recomputed from each run's `nested_cv_result.json` matched
+the training-log mean-of-folds (no drift).
+
+| experiment_name | Job | sweep lr | R² (mean-of-folds) | R² (pooled) | Pearson r (pooled) | MAE | RMSE | run |
+|---|---|---|---|---|---|---|---|---|
+| **`scprofile_to_age_safelr`** ✅ corrected | **362627** | {1e-4,5e-4,1e-3} | **0.446 ± 0.199** | **0.445** | 0.681 | 1.875 ± 0.348 | 2.440 ± 0.405 | [au4tkuq4](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/au4tkuq4) |
+| `scprofile_to_age` ✗ buggy (superseded) | 362510 | {…,5e-3} | 0.357 ± 0.518 | 0.357 | 0.643 | 1.995 ± 0.713 | 2.561 ± 0.737 | [ss1dilnf](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/ss1dilnf) |
+
+- **Corrected (362627):** pooled r² **0.445** (mean-of-folds 0.446 ± **0.199**),
+  pooled pearson 0.681 (0.736 ± 0.041 mean-of-folds), mae 1.875 ± 0.348, rmse
+  2.440 ± 0.405. **Zero** folds at `lr=0.005`; worst fold **−0.29** (was −2.48),
+  fold-SD **0.199** — matching identity→age's 0.195. 3/50 mild negatives, all at
+  normal lr with high Pearson (ordinary hard folds, not divergence).
+  [wandb run](https://wandb.ai/teampolpetta/age_vwm_transfer/runs/au4tkuq4)
+
+**Comparison (→ age, same 940 PNC cohort):**
+
+| node-feature scheme → age | R² (pooled) | where SC lives | source |
+|---|---|---|---|
+| classical MLP on raw SC (no graph) | ≈0.50 | input vector | Batch 2026-06-11 |
+| identity (one-hot nodes) — `src_age_id` | 0.456 | **edges** | Batch 2026-06-13 |
+| **connectivity_profile_sc** — `scprofile_to_age_safelr` (corrected, 362627) | **0.445** | **node features** | this batch |
+| glm_diagonal — `a4_glm_to_age` | 0.106 | node features (GLM, not SC) | Batch 2026-06-13 |
+
+**Headline.** *(Corrected 2026-06-25 — see the ⚠ note above.)* Putting the SC row
+**into the node features** predicts age **on par with** carrying SC in the **edges**
+with one-hot nodes — corrected pooled r² **0.445** (362627) ≈ identity→age **0.456**
+(a 0.011 gap, well within the pipeline's run-to-run ±0.02–0.03 noise), and far above
+the GLM vector (0.106). The original *"adds noise, not signal"* reading (0.357 <
+0.456) was an `lr=0.005` divergence artifact, **not** a real deficit:
+SC-as-node-features is **neutral** vs SC-as-edges — the GCN extracts the same
+age-relevant structure from edge topology either way, and the dense 400-d SC node
+vector neither adds nor subtracts once the bad-lr folds are gone. A non-graph MLP on
+the raw SC matrix (≈0.50) still edges out both graph schemes. The fold distribution
+is now well-behaved (r² −0.29…+0.64, fold-SD 0.199 ≈ identity's 0.195). **Caveat:**
+age-stratified vs `src_age_id`'s VWM-stratified folds → shares the cohort but not
+byte-for-byte paired; an age-stratified identity→age run would tighten the ≈.
+
+**Command (corrected run 362627).** `cluster-submit --node gpunode02 --gpu rtx3090
+slurm/train.sh -J scprofile-age-safelr --time=2-00:00:00
+"--export=ALL,RUN_ARGS=experiment_name=scprofile_to_age_safelr
+features=connectivity_profile_sc dataset=pnc
+dataset.subject_list_file=configs/subject_lists/pnc_vwm_cohort.txt model=gcn
+labels=pnc_default trainer.search_space=configs/sweeper/source_age_pinned.yaml
+trainer.n_repetitions=10 trainer.n_outer_folds=5 trainer.inner_hpo_trials=20
+trainer.epochs=300 logging.project=age_vwm_transfer"` — identical to the original
+362510 recipe except the `source_age_pinned.yaml` sweep no longer offers `lr=0.005`
+(commit `0b3c773`). **Avoid gpunode01** (it silently accepted-but-never-scheduled an
+earlier smoke); `cluster-tail` blocks on a missing log here, so use `cluster-fetch`
+for logs.
+
+---
+
 ## Batch 2026-06-22 — PNC age→PCPT transfer (identity carrier; arms B-fullFT/B-frozen + A3/frozen-random/A5)
 
 **What.** Does an **age-pretrained identity backbone** transfer to **PCPT accuracy**
