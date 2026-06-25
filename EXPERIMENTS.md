@@ -157,7 +157,7 @@ mean-of-folds (no drift).
 |---|---|---|---|
 | classical MLP on raw SC (no graph) | ≈0.50 | input vector | Batch 2026-06-11 |
 | identity (one-hot nodes) — `src_age_id` | 0.456 | **edges** | Batch 2026-06-13 |
-| connectivity_profile_sc — `scprofile_to_age` | 0.357 | node features | Batch 2026-06-23 (scprofile) |
+| connectivity_profile_sc — `scprofile_to_age` | ~~0.357~~ → **0.445** (corrected, 362627) | node features | Batch 2026-06-23 (scprofile) |
 | **identity + glm_diagonal** (this run) | **0.356** | **edges** + node feat (GLM) | this batch |
 | glm_diagonal — `a4_glm_to_age` | 0.106 | node features (GLM, not SC) | Batch 2026-06-13 |
 
@@ -173,12 +173,17 @@ mean-of-folds (no drift).
    channel *competes with* the topology channel rather than adding its ~0.10 of
    standalone age signal on top: extra 400 subject-varying, weakly-age-relevant
    columns + shared first-layer/BatchNorm capacity cost more than they bring.
-3. **Two node-feature schemes converge on the same penalty.** `identity_glm_diagonal`
-   (0.356) ≈ `scprofile_to_age` (0.357), both ~0.10 below identity-in-edges (0.456).
-   Consistent story across Batch 2026-06-23: **dumping dense node features onto the
-   GCN dilutes the clean edge-topology readout for age** — SC-in-edges + one-hot
-   nodes is the strongest GNN scheme; adding node-feature channels (SC-row or GLM)
-   only subtracts.
+3. **The dilution is GLM-channel-specific, not "any dense node feature."**
+   *(Corrected 2026-06-25.)* Originally read as `identity_glm_diagonal` (0.356) ≈
+   `scprofile_to_age` (0.357), both diluting ~0.10 below identity — but the scprofile
+   0.357 was an `lr=0.005` artifact; corrected it is **0.445 ≈ identity 0.456** (job
+   362627, see the scprofile batch). So **only the GLM node-feature channel dilutes**:
+   dumping the *SC row* into node features is neutral vs SC-in-edges (the GCN reads
+   the same topology either way), whereas the per-node GLM-contrast channel genuinely
+   competes with the topology readout (−0.10). SC-in-edges + one-hot nodes remains the
+   strongest scheme; the **GLM channel** — not dense node features per se — is what
+   subtracts. (`idglmdiag` itself is unaffected by the lr bug: it picked `lr=0.005` on
+   24/50 folds with no divergence, group mean +0.336.)
 
 **Caveats.** (i) `src_age_id`'s 0.456 was **VWM-stratified**; this run is
 age-stratified → shares the cohort but not byte-for-byte paired folds. Stratification
