@@ -1,0 +1,25 @@
+# @package hydra.sweeper
+# Playground-arch source-age HPO sweeper (THROWAWAY DEBUG — HANDOFF 2).
+# Identical optimiser+dropout search to source_age_pinned.yaml, but with the
+# head params (model.head_hidden_dim, model.head_num_layers) REMOVED so the
+# Playground-style single-linear head (model.head_num_layers=0 on the CLI, i.e.
+# RegressionHead with the hidden loop skipped -> just Linear(emb,1)) is NOT
+# overridden back to a 2-layer MLP during inner HPO.
+#
+# Why head_num_layers=0 (not 1): src/models/heads/regression_head.py builds the
+# loop `for _ in range(head_num_layers): Linear(emb,hidden)+ReLU+Dropout` and
+# then appends a final Linear(.,1). So head_num_layers=1 = a 2-Linear MLP, and
+# head_num_layers=0 = a single Linear(emb,1) = the Playground's nn.Linear(128,1).
+#
+# Backbone shape (num_layers=2, hidden_dim=128, embedding_dim=128, pooling=mean,
+# norm=batch, jk_mode=last) is pinned by the CLI and never appears in this
+# search space, so it is held fixed across all trials.
+sampler:
+  _target_: optuna.samplers.TPESampler
+  seed: 42
+direction: maximize
+n_trials: 20
+params:
+  trainer.lr: choice(0.0001, 0.0005, 0.001)
+  trainer.weight_decay: choice(0.0, 0.0001, 0.001, 0.01)
+  model.dropout: choice(0.0, 0.1, 0.2, 0.3)
